@@ -7,8 +7,9 @@ use miette::Result;
 fn main() -> Result<()> {
     let source_code = r#"
         macro call_gadget(target_addr) {
+            _label:
             A8 21              
-            target_addr.le     // 宏内部直接把传进来的标签地址按小端吐出
+            _label.le     // 宏内部直接把传进来的标签地址按小端吐出
         }
 
         @offset(0xd710)

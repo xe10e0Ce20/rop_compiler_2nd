@@ -44,10 +44,11 @@ fn build_macro_def(pair: Pair<Rule>) -> Result<MacroDef> {
                     params.push(p.as_str().to_string());
                 }
             }
-            Rule::value_expr | Rule::macro_call | Rule::instruction | Rule::yield_keyword => {
+            // 【修正点】：加上 Rule::label_def
+            Rule::value_expr | Rule::macro_call | Rule::instruction | Rule::yield_keyword | Rule::label_def => {
                 body.push(build_node(item)?);
             }
-            _ => {} // 兜底：忽略多余的空格、注释等隐式 Rule
+            _ => {}
         }
     }
     Ok(MacroDef { name, params, body })
