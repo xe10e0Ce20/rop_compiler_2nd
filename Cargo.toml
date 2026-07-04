@@ -1,0 +1,13 @@
+[package]
+name = "rop_compiler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pest = "2.7"
+pest_derive = "2.7"
+
+miette = { version = "7.0", features = ["fancy"] }
+thiserror = "1.0" 
+
+clap = { version = "4.4", features = ["derive"] } 
