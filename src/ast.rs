@@ -21,6 +21,7 @@ pub struct MacroDef {
 #[derive(Debug, Clone)]
 pub enum Instruction {
     Offset(u16),
+    SetFiller(char),
 }
 
 #[derive(Debug, Clone)]
@@ -67,11 +68,32 @@ impl RopValue {
         let new_val = (self.val << (other.len * 8)) | other.val;
         RopValue::new(new_val, self.len + other.len)
     }
+
+    // 这是一个通用的辅助方法，你可以放在 Compiler 或 RopValue 中
+    pub fn reverse_rop_bytes(val: u64, len: usize) -> u64 {
+        let bytes = val.to_be_bytes(); 
+        let mut target_bytes = bytes[8 - len..].to_vec();
+        target_bytes.reverse();
+        
+        let mut new_val = 0u64;
+        for (i, &b) in target_bytes.iter().enumerate() {
+            new_val |= (b as u64) << ((len - 1 - i) * 8);
+        }
+        new_val
+    }
 }
 
+// 新增 Token 枚举
+#[derive(Debug, Clone)]
+pub enum ExprToken {
+    Raw(String),           // 纯变量/数字："0x0004", "A8", "&gadget"
+    Op(String),            // 操作符："+", "-", "|"
+    Bracket(Expr),         // 方括号：[ expr ]
+    Group(Expr),           // 圆括号：( expr )
+}
+
+// 改造 Expr
 #[derive(Debug, Clone)]
 pub struct Expr {
-    pub raw_tokens: Vec<String>, // 包含操作符和操作数
-    pub se: bool,               // 新增：标识该表达式是否加了 .se
-    pub sub_expr: Option<Box<Expr>>, // 新增：处理括号逻辑
+    pub tokens: Vec<ExprToken>, 
 }

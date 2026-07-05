@@ -54,15 +54,29 @@ fn build_macro_def(pair: Pair<Rule>) -> Result<MacroDef> {
     Ok(MacroDef { name, params, body })
 }
 
+// parser.rs -> build_instruction
 fn build_instruction(pair: Pair<Rule>) -> Result<Instruction> {
-    let inner = pair.into_inner().next().ok_or_else(|| miette!("空指令"))?;
+    // 获取指令的内部部分 (offset_cmd 或 filler_cmd)
+    let inner = pair.into_inner().next()
+        .ok_or_else(|| miette!("指令内容为空"))?; 
+        
     match inner.as_rule() {
         Rule::offset_cmd => {
-            let hex_str = inner.into_inner().next().unwrap().as_str().trim_start_matches("0x");
-            let val = u16::from_str_radix(hex_str, 16).map_err(|e| miette!("非法偏移值: {}", e))?;
+            let hex_pair = inner.into_inner().next()
+                .ok_or_else(|| miette!("offset 缺失参数"))?;
+            let hex_str = hex_pair.as_str().trim_start_matches("0x");
+            let val = u16::from_str_radix(hex_str, 16)
+                .map_err(|e| miette!("非法偏移值: {}", e))?;
             Ok(Instruction::Offset(val))
         }
-        _ => Err(miette!("未知或不支持的指令")), // 【核心修复点】添加通配符兜底
+        Rule::filler_cmd => {
+            let hex_pair = inner.into_inner().next()
+                .ok_or_else(|| miette!("filler 缺失参数"))?;
+            let c = hex_pair.as_str().chars().next()
+                .ok_or_else(|| miette!("无效填充符"))?;
+            Ok(Instruction::SetFiller(c))
+        }
+        _ => Err(miette!("未知指令: {:?}", inner.as_rule())),
     }
 }
 
@@ -83,29 +97,34 @@ fn build_block(pair: Pair<Rule>) -> Result<Block> {
 }
 
 fn build_expr(pair: Pair<Rule>) -> Expr {
-    let mut raw_tokens = Vec::new();
-    let mut se = false;
-    let mut sub_expr = None;
-
+    let mut tokens = Vec::new();
+    
     for child in pair.into_inner() {
         match child.as_rule() {
-            // 处理嵌套括号: (0x1 | 0x2)
-            Rule::expr_group => {
-                let inner_expr = build_expr(child.into_inner().next().unwrap());
-                sub_expr = Some(Box::new(inner_expr));
+            Rule::expr_term => {
+                let inner = child.into_inner().next().unwrap();
+                match inner.as_rule() {
+                    Rule::hex_number | Rule::byte_number | Rule::address_ref => {
+                        tokens.push(ExprToken::Raw(inner.as_str().trim().to_string()));
+                    }
+                    Rule::expr_group => {
+                        let val_expr = build_expr(inner.into_inner().next().unwrap());
+                        tokens.push(ExprToken::Group(val_expr));
+                    }
+                    Rule::bracket_expr => {
+                        let val_expr = build_expr(inner.into_inner().next().unwrap());
+                        tokens.push(ExprToken::Bracket(val_expr));
+                    }
+                    _ => {}
+                }
             }
-            // 处理 Token 或 操作符
-            Rule::expr_term | Rule::binary_op => {
-                raw_tokens.push(child.as_str().trim().to_string());
-            }
-            // 处理 .se 后缀 (对应语法中的 "." ~ "se")
-            Rule::se => { 
-                se = true; 
+            Rule::binary_op => {
+                tokens.push(ExprToken::Op(child.as_str().trim().to_string()));
             }
             _ => {}
         }
     }
-    Expr { raw_tokens, se, sub_expr }
+    Expr { tokens }
 }
 
 fn build_node(pair: Pair<Rule>) -> Result<Node> {
@@ -125,12 +144,13 @@ fn build_node(pair: Pair<Rule>) -> Result<Node> {
             let name = inner.next().unwrap().as_str().to_string();
             let mut args = Vec::new();
             let mut body = None;
+            
             for item in inner {
                 match item.as_rule() {
-                    Rule::arg_list => {
-                        for arg_pair in item.into_inner() {
-                            args.push(build_expr(arg_pair));
-                        }
+                    Rule::macro_arg => {
+                        // 直接构建 Expr，保存原始的 Token 序列，实现字面量粘贴
+                        let val_expr_pair = item.into_inner().next().unwrap();
+                        args.push(build_expr(val_expr_pair));
                     }
                     Rule::macro_body => {
                         let mut b_vec = Vec::new();

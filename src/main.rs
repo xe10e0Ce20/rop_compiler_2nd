@@ -6,16 +6,17 @@ use miette::Result;
 
 fn main() -> Result<()> {
     let source_code = r#"
-        macro call_gadget(target_addr) {
+        def call_gadget(target_addr) {
             _label:
             A8 21     
             yield         
-            _label.se     // 宏内部直接把传进来的标签地址按小端吐出
+            [_label]    // 宏内部直接把传进来的标签地址按小端吐出
         }
 
         @offset(0xd710)
         block main {
-            00 11 22 33        
+        @filler(3)
+            .. 11 22 33        
                         
             gadget_pop_rdi:
             
@@ -25,17 +26,14 @@ fn main() -> Result<()> {
             }
 
             // 2. 标签还可以直接参与编译期运算！
-            &gadget_shell + 0x0004.se 
+            gadget_shell | &gadget_shell
             
-            44 55 66 77
 
             5F C3              // 占 2 字节，地址应当是 0xD710 + 4(main前4字节) + 2(A8 21) + 2(地址) + 2(算术) + 4(main后4字节) = 0xD722
 
             gadget_shell:
 
             AA BB CC DD EE FF  // 占 6 字节，地址在 gadget_pop_rdi 后面，即 0xD724
-
-            0x0001.se  0x0003.se
         }
     "#;
 

@@ -6,36 +6,38 @@ file = { SOI ~ (import_cmd | macro_def | instruction | block)* ~ EOI }
 import_cmd  = { "@import" ~ "(" ~ "\"" ~ path_str ~ "\"" ~ ")" }
 path_str    = @{ (!"\"" ~ ANY)+ }
 
-macro_def   = { "macro" ~ identifier ~ "(" ~ param_list? ~ ")" ~ "{" ~ block_content* ~ "}" }
+// 关键字从 macro 改为 def
+macro_def   = { "def" ~ identifier ~ "(" ~ param_list? ~ ")" ~ "{" ~ block_content* ~ "}" }
 param_list  = { identifier ~ ("," ~ identifier)* }
 
-instruction = { "@" ~ offset_cmd }
+// 添加 filler 指令
+instruction = { "@" ~ (offset_cmd | filler_cmd) }
 offset_cmd  = { "offset" ~ "(" ~ hex_number ~ ")" }
+filler_cmd  = { "filler" ~ "(" ~ filler_arg ~ ")" } // 增加一层包装
+filler_arg  = @{ ASCII_HEX_DIGIT }                 // 明确参数位置
 
 block       = { "block" ~ identifier ~ "{" ~ block_content* ~ "}" }
 
 block_content = _{ label_def | macro_call | value_expr | instruction | yield_keyword }
 yield_keyword = { "yield" }
 
-// 核心修改：将 endian 换成 se，并允许括号嵌套 (expr_group)
-value_expr  = { expr_term ~ (binary_op ~ expr_term)* ~ ("." ~ se)? }
-se    = { "se" }
+value_expr  = { expr_term ~ (binary_op ~ expr_term)* }
 binary_op   = { "+" | "-" | "|" }
-expr_term   = { hex_number | byte_number | address_ref | expr_group }
+expr_term   = { hex_number | byte_number | address_ref | expr_group | bracket_expr }
 expr_group  = { "(" ~ value_expr ~ ")" }
+bracket_expr = { "[" ~ value_expr ~ "]" }
 
 address_ref = @{ "&"? ~ identifier }
 
-// 移除原来的 endian，改用 se
 label_def   = { identifier ~ ":" }
 
-macro_call  = { identifier ~ "(" ~ arg_list? ~ ")" ~ (macro_body)? }
-arg_list    = { value_expr ~ ("," ~ value_expr)* }
+macro_arg = { value_expr }
+macro_call = { identifier ~ "(" ~ (macro_arg ~ ("," ~ macro_arg)*)? ~ ")" ~ (macro_body)? }
 macro_body  = { "{" ~ block_content* ~ "}" }
 
-hex_number  = @{ "0x" ~ ASCII_HEX_DIGIT+ }
-byte_number = @{ ASCII_HEX_DIGIT{2} ~ !ASCII_ALPHANUMERIC }
+hex_number  = @{ "0x"? ~ (ASCII_HEX_DIGIT | ".")+ }
+byte_number = @{ (ASCII_HEX_DIGIT | "."){2} ~ !ASCII_ALPHANUMERIC }
 
 identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
-keyword    = _{ ("macro" | "block" | "offset" | "yield" | "import" | "se") ~ WB }
+keyword    = _{ ("def" | "block" | "offset" | "yield" | "import" | "filler") ~ WB }
 WB         = _{ !ASCII_ALPHANUMERIC }
