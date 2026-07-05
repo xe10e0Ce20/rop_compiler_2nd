@@ -262,7 +262,7 @@ impl Compiler {
 
                 let mut macro_def = self.macro_registry.get(name)
                     .cloned()
-                    .ok_or_else(|| miette!("宏未定义 / Macro undefined"))?;
+                    .ok_or_else(|| miette!("宏 {name} 未定义 / Macro {name} undefined"))?;
     
                 let mut next_env = arg_env.clone();
                 for (i, param) in macro_def.params.iter().enumerate() {
