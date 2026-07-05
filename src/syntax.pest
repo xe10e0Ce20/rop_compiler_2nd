@@ -1,43 +1,54 @@
+// 空白与注释
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 
+// 顶层结构
 file = { SOI ~ (import_cmd | macro_def | instruction | block)* ~ EOI }
 
+// 导入语句: @import("path")
 import_cmd  = { "@import" ~ "(" ~ "\"" ~ path_str ~ "\"" ~ ")" }
 path_str    = @{ (!"\"" ~ ANY)+ }
 
-// 关键字从 macro 改为 def
+// 宏定义: def name(params) { body }
 macro_def   = { "def" ~ identifier ~ "(" ~ param_list? ~ ")" ~ "{" ~ block_content* ~ "}" }
 param_list  = { identifier ~ ("," ~ identifier)* }
 
-// 添加 filler 指令
+// 伪指令: @offset(...) 或 @filler(...)
 instruction = { "@" ~ (offset_cmd | filler_cmd) }
 offset_cmd  = { "offset" ~ "(" ~ hex_number ~ ")" }
-filler_cmd  = { "filler" ~ "(" ~ filler_arg ~ ")" } // 增加一层包装
-filler_arg  = @{ ASCII_HEX_DIGIT }                 // 明确参数位置
+filler_cmd  = { "filler" ~ "(" ~ filler_arg ~ ")" }
+filler_arg  = @{ ASCII_HEX_DIGIT }
 
+// 代码块: block name { ... }
 block       = { "block" ~ identifier ~ "{" ~ block_content* ~ "}" }
 
+// 块内允许的内容
 block_content = _{ label_def | macro_call | value_expr | instruction | yield_keyword }
 yield_keyword = { "yield" }
 
+// 表达式：支持运算符 + - | 以及各种项
 value_expr  = { expr_term ~ (binary_op ~ expr_term)* }
 binary_op   = { "+" | "-" | "|" }
 expr_term   = { hex_number | byte_number | address_ref | expr_group | bracket_expr }
 expr_group  = { "(" ~ value_expr ~ ")" }
 bracket_expr = { "[" ~ value_expr ~ "]" }
 
+// 地址引用：可选的 & 前缀
 address_ref = @{ "&"? ~ identifier }
 
+// 标签定义
 label_def   = { identifier ~ ":" }
 
+// 宏调用：name(args) 可能后跟内联代码体
 macro_arg = { value_expr }
 macro_call = { identifier ~ "(" ~ (macro_arg ~ ("," ~ macro_arg)*)? ~ ")" ~ (macro_body)? }
 macro_body  = { "{" ~ block_content* ~ "}" }
 
+// 数值字面量
 hex_number  = @{ "0x"? ~ (ASCII_HEX_DIGIT | ".")+ }
 byte_number = @{ (ASCII_HEX_DIGIT | "."){2} ~ !ASCII_ALPHANUMERIC }
 
+// 标识符与关键字
 identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 keyword    = _{ ("def" | "block" | "offset" | "yield" | "import" | "filler") ~ WB }
 WB         = _{ !ASCII_ALPHANUMERIC }
