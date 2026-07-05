@@ -97,36 +97,60 @@ impl Compiler {
         Ok(())
     }
 
-    fn parse_single_token(&self, t: &str, arg_env: &HashMap<String, u16>, dry_run: bool) -> Result<(u16, bool)> {
-        if t.starts_with("0x") {
-            let val = u16::from_str_radix(t.trim_start_matches("0x"), 16).map_err(|e| miette!("无效十六进制数 '{}': {}", t, e))?;
-            Ok((val, false))
-        } else if t.len() == 2 && t.chars().all(|c| c.is_ascii_hexdigit()) {
-            let val = u16::from_str_radix(t, 16).unwrap();
-            Ok((val, true))
-        } else if let Some(&val) = arg_env.get(t) {
-            Ok((val, false))
-        } else if let Some(&val) = self.symbol_table.get(t) {
-            Ok((val, false))
+    fn parse_single_token(&self, t: &str, arg_env: &HashMap<String, RopValue>, dry_run: bool) -> Result<RopValue> {
+        // 0. 处理后缀 .se
+        let has_se = t.ends_with(".se");
+        let base_t = if has_se { t.trim_end_matches(".se") } else { t };
+        
+        let is_raw = base_t.starts_with('&');
+        let target_key = if is_raw { &base_t[1..] } else { base_t };
+
+        // 1. 处理 Hex 常量 (0x 开头) 或 Byte (如 "00", "A8")
+        let mut val = if target_key.starts_with("0x") {
+            let hex_str = target_key.trim_start_matches("0x");
+            let v = u64::from_str_radix(hex_str, 16).map_err(|e| miette!("无效Hex: {}", e))?;
+            let len = (hex_str.len() + 1) / 2;
+            RopValue::new(v, len)
+        } else if target_key.len() == 2 && target_key.chars().all(|c| c.is_ascii_hexdigit()) {
+            let v = u64::from_str_radix(target_key, 16).map_err(|e| miette!("无效Byte: {}", e))?;
+            RopValue::new(v, 1)
         } else {
-            // 【关键修复】：
-            if dry_run {
-                // 如果是 Dry Run，没找到标签就返回 0，别报错！
-                Ok((0, false)) 
+            // 2. 查找逻辑
+            if let Some(&v) = arg_env.get(target_key) {
+                v
+            } else if let Some(&v) = self.symbol_table.get(target_key) {
+                RopValue::new(v as u64, 2)
+            } else if dry_run {
+                RopValue::new(0, 2)
             } else {
-                // 只有在 Final Run 还没找到，才真的是未定义
-                Err(miette!("未定义的标识符 '{}'", t))
+                return Err(miette!("未定义的标识符 '{}'", base_t));
             }
+        };
+
+        // 3. 应用 .se 逻辑：如果在 Token 级别检测到了 .se，直接翻转数值
+        // 注意：这里的翻转是针对其长度 len 的反转
+        if has_se {
+            let bytes = val.val.to_be_bytes(); // 取8字节大端原始值
+            let mut target_bytes = bytes[8 - val.len..].to_vec();
+            target_bytes.reverse();
+            
+            // 重新组装回 u64 (作为大端数值存储，以便 | 拼接)
+            let mut new_val = 0u64;
+            for (i, &b) in target_bytes.iter().enumerate() {
+                new_val |= (b as u64) << ((val.len - 1 - i) * 8);
+            }
+            val.val = new_val;
         }
+
+        Ok(val)
     }
 
     fn expand_macros_recursive(&mut self, nodes: &mut Vec<Node>, call_id: usize, macro_name: &str) {
         for node in nodes.iter_mut() {
-            println!("DEBUG: 正在检查节点: {:?}", node);
             match node {
                 Node::Label(name) if name.starts_with('_') => {
                     // 直接修改标签名，完成名字替换
-                    println!("正在重命名宏内部标签 '{}' -> '__{}_{}_{}'", name, macro_name, call_id, name);
+                    println!("DEBUG: 正在重命名宏内部标签 '{}' -> '__{}_{}_{}'", name, macro_name, call_id, name);
                     println!("DEBUG: Mapping local label '{}' to '{}'", name, format!("__{}_{}{}", macro_name, call_id, name));
                     *name = format!("__{}_{}_{}", macro_name, call_id, name);
                 },
@@ -143,31 +167,28 @@ impl Compiler {
         }
     }
 
-    fn evaluate_expr(&self, expr: &Expr, arg_env: &HashMap<String, u16>, dry_run: bool) -> Result<(u16, bool)> {
-        if expr.raw_tokens.is_empty() { return Ok((0, false)); }
+    fn evaluate_expr(&self, expr: &Expr, arg_env: &HashMap<String, RopValue>, dry_run: bool) -> Result<RopValue> {
+        if expr.raw_tokens.is_empty() { return Ok(RopValue::new(0, 0)); }
         
-        // 现在这里可以安全地使用 dry_run 了
-        if expr.raw_tokens.len() == 1 {
-            return self.parse_single_token(&expr.raw_tokens[0], arg_env, dry_run);
-        }
-
-        let (mut total, _) = self.parse_single_token(&expr.raw_tokens[0], arg_env, dry_run)?;
+        let mut current = self.parse_single_token(&expr.raw_tokens[0], arg_env, dry_run)?;
+        
         let mut i = 1;
         while i < expr.raw_tokens.len() {
             let op = &expr.raw_tokens[i];
-            let (next_val, _) = self.parse_single_token(&expr.raw_tokens[i+1], arg_env, dry_run)?;
-            match op.as_str() {
-                "+" => total = total.wrapping_add(next_val),
-                "-" => total = total.wrapping_sub(next_val),
-                _ => return Err(miette!("不支持的运算符")),
-            }
+            let next = self.parse_single_token(&expr.raw_tokens[i+1], arg_env, dry_run)?;
+            
+            current = match op.as_str() {
+                "+" | "-" => current.math_op(&next, op),
+                "|" => current.concat(&next),
+                _ => return Err(miette!("不支持的运算符: {}", op)),
+            };
             i += 2;
         }
-        Ok((total, false))
+        Ok(current)
     }
 
     // 还原后的节点处理 (核心：dry_run 控制是否写入)
-    fn process_node(&mut self, node: &Node, trailing_body: &Option<Vec<Node>>, arg_env: &HashMap<String, u16>, dry_run: bool) -> Result<()> {
+    fn process_node(&mut self, node: &Node, trailing_body: &Option<Vec<Node>>, arg_env: &HashMap<String, RopValue>, dry_run: bool) -> Result<()> {
         match node {
             Node::Label(name) => {
                 if dry_run { self.symbol_table.insert(name.clone(), self.current_offset); }
@@ -177,18 +198,20 @@ impl Compiler {
                 self.process_instruction(inst, dry_run) // 这里直接返回 Result，不需要 Ok(())
             }
             Node::Value(expr) => {
-                let (val, is_single) = self.evaluate_expr(expr, arg_env, dry_run)?;
+                // 1. 获取已经处理好字节序的值
+                let rop_val = self.evaluate_expr(expr, arg_env, dry_run)?;
+                
+                // 2. 直接输出字节，不需要再判断 endian 或 se 了
                 if !dry_run {
-                    if is_single && expr.endian.is_none() {
-                        self.output.push(val as u8);
-                    } else {
-                        let is_be = expr.endian.as_deref() == Some("be");
-                        let bytes = if is_be { val.to_be_bytes() } else { val.to_le_bytes() };
-                        self.output.extend_from_slice(&bytes);
-                    }
+                    // rop_val.val 现在已经是大端序的数值，且 .se 已经在 parse 阶段处理过了
+                    // 我们只需根据 rop_val.len 取出对应的字节
+                    let bytes = rop_val.val.to_be_bytes()[(8 - rop_val.len)..].to_vec();
+                    self.output.extend_from_slice(&bytes);
                 }
-                self.current_offset += if is_single && expr.endian.is_none() { 1 } else { 2 };
-                Ok(()) // 显式返回
+                
+                // 3. 自动追踪偏移量
+                self.current_offset += rop_val.len as u16;
+                Ok(())
             }
             Node::Yield => {
                 if let Some(nodes) = trailing_body {
@@ -203,11 +226,16 @@ impl Compiler {
 
                 let mut macro_def = self.macro_registry.get(name).cloned().ok_or_else(|| miette!("宏未定义"))?;
 
-                let mut next_env = arg_env.clone();
+                // 确保这里的 next_env 是 HashMap<String, RopValue>
+                let mut next_env: HashMap<String, RopValue> = arg_env.clone(); 
+                
                 for (i, param) in macro_def.params.iter().enumerate() {
                     if let Some(arg) = args.get(i) {
-                        let (val, _) = self.evaluate_expr(arg, arg_env, dry_run)?;
-                        next_env.insert(param.clone(), val);
+                        // 这里 evaluate_expr 返回的就是 RopValue
+                        let rop_val = self.evaluate_expr(arg, arg_env, dry_run)?;
+                        
+                        // 【关键修改】：不要用 .val as u16，直接存入整个 rop_val！
+                        next_env.insert(param.clone(), rop_val); 
                     }
                 }
 
@@ -216,7 +244,7 @@ impl Compiler {
                 for n in &macro_def.body {
                     self.process_node(n, body, &next_env, dry_run)?;
                 }
-                Ok(()) // 显式返回
+                Ok(())
             }
         }
     }

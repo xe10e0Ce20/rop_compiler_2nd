@@ -5,6 +5,7 @@ file = { SOI ~ (import_cmd | macro_def | instruction | block)* ~ EOI }
 
 import_cmd  = { "@import" ~ "(" ~ "\"" ~ path_str ~ "\"" ~ ")" }
 path_str    = @{ (!"\"" ~ ANY)+ }
+
 macro_def   = { "macro" ~ identifier ~ "(" ~ param_list? ~ ")" ~ "{" ~ block_content* ~ "}" }
 param_list  = { identifier ~ ("," ~ identifier)* }
 
@@ -16,23 +17,25 @@ block       = { "block" ~ identifier ~ "{" ~ block_content* ~ "}" }
 block_content = _{ label_def | macro_call | value_expr | instruction | yield_keyword }
 yield_keyword = { "yield" }
 
-value_expr = { expr_term ~ (binary_op ~ expr_term)* ~ ("." ~ endian)? }
-binary_op  = { "+" | "-" }
-expr_term  = { hex_number | byte_number | identifier }
-endian     = { "le" | "be" }
+// 核心修改：将 endian 换成 se，并允许括号嵌套 (expr_group)
+value_expr  = { expr_term ~ (binary_op ~ expr_term)* ~ ("." ~ se)? }
+se    = { "se" }
+binary_op   = { "+" | "-" | "|" }
+expr_term   = { hex_number | byte_number | address_ref | expr_group }
+expr_group  = { "(" ~ value_expr ~ ")" }
 
-label_def = { identifier ~ ":" }
-macro_call = { identifier ~ "(" ~ arg_list? ~ ")" ~ (macro_body)? }
-arg_list   = { value_expr ~ ("," ~ value_expr)* }
-macro_body = { "{" ~ block_content* ~ "}" }
+address_ref = @{ "&"? ~ identifier }
+
+// 移除原来的 endian，改用 se
+label_def   = { identifier ~ ":" }
+
+macro_call  = { identifier ~ "(" ~ arg_list? ~ ")" ~ (macro_body)? }
+arg_list    = { value_expr ~ ("," ~ value_expr)* }
+macro_body  = { "{" ~ block_content* ~ "}" }
 
 hex_number  = @{ "0x" ~ ASCII_HEX_DIGIT+ }
 byte_number = @{ ASCII_HEX_DIGIT{2} ~ !ASCII_ALPHANUMERIC }
 
-identifier = @{ 
-    !("macro"  ~ WB) ~ 
-    !("block"  ~ WB) ~ 
-    !("offset" ~ WB) ~ 
-    !("yield"  ~ WB) ~ 
-    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+keyword    = _{ ("macro" | "block" | "offset" | "yield" | "import" | "se") ~ WB }
 WB         = _{ !ASCII_ALPHANUMERIC }

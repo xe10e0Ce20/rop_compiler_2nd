@@ -84,37 +84,43 @@ fn build_block(pair: Pair<Rule>) -> Result<Block> {
 
 fn build_expr(pair: Pair<Rule>) -> Expr {
     let mut raw_tokens = Vec::new();
-    let mut endian = None;
+    let mut se = false;
+    let mut sub_expr = None;
 
     for child in pair.into_inner() {
         match child.as_rule() {
+            // 处理嵌套括号: (0x1 | 0x2)
+            Rule::expr_group => {
+                let inner_expr = build_expr(child.into_inner().next().unwrap());
+                sub_expr = Some(Box::new(inner_expr));
+            }
+            // 处理 Token 或 操作符
             Rule::expr_term | Rule::binary_op => {
                 raw_tokens.push(child.as_str().trim().to_string());
             }
-            Rule::endian => {
-                endian = Some(child.as_str().to_string());
+            // 处理 .se 后缀 (对应语法中的 "." ~ "se")
+            Rule::se => { 
+                se = true; 
             }
-            _ => {} // 兜底
+            _ => {}
         }
     }
-    Expr { raw_tokens, endian }
+    Expr { raw_tokens, se, sub_expr }
 }
 
 fn build_node(pair: Pair<Rule>) -> Result<Node> {
     match pair.as_rule() {
         Rule::yield_keyword => Ok(Node::Yield),
         
-        // 修正：这是处理 label_def 的正确方式
         Rule::label_def => {
-            // 注意：如果语法中 identifier 是 label_def 的子项，这样取 name 是对的
-            let name = pair.as_str().trim_end_matches(':').to_string();
+            // identifier 规则在语法里是 label_def 的一部分
+            let name = pair.as_str().trim_end_matches(':').trim().to_string();
             Ok(Node::Label(name))
         }
         
         Rule::value_expr => Ok(Node::Value(build_expr(pair))),
         
         Rule::macro_call => {
-            // ... 原有的 macro_call 逻辑保持不变 ...
             let mut inner = pair.into_inner();
             let name = inner.next().unwrap().as_str().to_string();
             let mut args = Vec::new();
@@ -141,6 +147,6 @@ fn build_node(pair: Pair<Rule>) -> Result<Node> {
         
         Rule::instruction => Ok(Node::Instruction(build_instruction(pair)?)),
         
-        _ => Err(miette!("未知节点: {:?}", pair.as_rule())),
+        _ => Err(miette!("未知节点类型: {:?}", pair.as_rule())),
     }
 }

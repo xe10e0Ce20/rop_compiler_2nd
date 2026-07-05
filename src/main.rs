@@ -8,8 +8,9 @@ fn main() -> Result<()> {
     let source_code = r#"
         macro call_gadget(target_addr) {
             _label:
-            A8 21              
-            _label.le     // 宏内部直接把传进来的标签地址按小端吐出
+            A8 21     
+            yield         
+            _label.se     // 宏内部直接把传进来的标签地址按小端吐出
         }
 
         @offset(0xd710)
@@ -19,10 +20,12 @@ fn main() -> Result<()> {
             gadget_pop_rdi:
             
             // 1. 大统一：直接把地址标签作为宏参数传进去！
-            call_gadget(gadget_pop_rdi)
+            call_gadget(( gadget_pop_rdi | 0x0001 )){
+                a8 23 
+            }
 
             // 2. 标签还可以直接参与编译期运算！
-            gadget_shell + 0x0004.be 
+            &gadget_shell + 0x0004.se 
             
             44 55 66 77
 
@@ -31,6 +34,8 @@ fn main() -> Result<()> {
             gadget_shell:
 
             AA BB CC DD EE FF  // 占 6 字节，地址在 gadget_pop_rdi 后面，即 0xD724
+
+            0x0001.se  0x0003.se
         }
     "#;
 
