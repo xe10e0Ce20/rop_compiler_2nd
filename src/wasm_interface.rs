@@ -39,13 +39,17 @@ pub fn compile_for_web(source_code: &str) -> JsValue {
     match compiler.compile(&ast_tree) {
         Ok(_) => {
             result.success = true;
+            println!("Compiler: 编译成功。共 {} 个 block。", compiler.block_outputs.len());
+            for (name, bytes) in &compiler.block_outputs {
+                println!("Compiler: Block '{}' 有 {} 字节。", name, bytes.len());
+            }
             for (block_name, bytes) in compiler.block_outputs {
                 let hex_string: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                 result.blocks.insert(block_name, hex_string);
             }
         }
         Err(e) => {
-            result.error_message = Some(format!("编译失败: {:?}", e));
+            result.error_message = Some(format!("{:?}", e));
         }
     }
 

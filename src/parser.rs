@@ -11,7 +11,7 @@ pub struct RopParser;
 /// 将源代码解析为 AST
 pub fn parse_to_ast(source: &str) -> Result<RopFile> {
     let mut parsed = RopParser::parse(Rule::file, source)
-        .map_err(|e| miette!("语法解析失败:\n{}", e))?;
+        .map_err(|e| miette!("语法解析失败:\n{0} / Parse error:\n{0}", e))?;
     Ok(build_file(parsed.next().unwrap())?)
 }
 
@@ -60,25 +60,25 @@ fn build_macro_def(pair: Pair<Rule>) -> Result<MacroDef> {
 /// 构建伪指令节点
 fn build_instruction(pair: Pair<Rule>) -> Result<Instruction> {
     let inner = pair.into_inner().next()
-        .ok_or_else(|| miette!("指令内容为空"))?;
+        .ok_or_else(|| miette!("指令内容为空 / Instruction content is empty"))?;
 
     match inner.as_rule() {
         Rule::offset_cmd => {
             let hex_pair = inner.into_inner().next()
-                .ok_or_else(|| miette!("offset 缺失参数"))?;
+                .ok_or_else(|| miette!("offset 缺失参数 / Missing argument for offset"))?;
             let hex_str = hex_pair.as_str().trim_start_matches("0x");
             let val = u16::from_str_radix(hex_str, 16)
-                .map_err(|e| miette!("非法偏移值: {}", e))?;
+                .map_err(|e| miette!("非法偏移值: {0} / Invalid offset value: {0}", e))?;
             Ok(Instruction::Offset(val))
         }
         Rule::filler_cmd => {
             let hex_pair = inner.into_inner().next()
-                .ok_or_else(|| miette!("filler 缺失参数"))?;
+                .ok_or_else(|| miette!("filler 缺失参数 / Missing argument for filler"))?;
             let c = hex_pair.as_str().chars().next()
-                .ok_or_else(|| miette!("无效填充符"))?;
+                .ok_or_else(|| miette!("无效填充符 / Invalid filler character"))?;
             Ok(Instruction::SetFiller(c))
         }
-        _ => Err(miette!("未知指令: {:?}", inner.as_rule())),
+        _ => Err(miette!("未知指令: {0:?} / Unknown instruction: {0:?}", inner.as_rule())),
     }
 }
 
@@ -169,6 +169,6 @@ fn build_node(pair: Pair<Rule>) -> Result<Node> {
 
         Rule::instruction => Ok(Node::Instruction(build_instruction(pair)?)),
 
-        _ => Err(miette!("未知节点类型: {:?}", pair.as_rule())),
+        _ => Err(miette!("未知节点类型: {0:?} / Unknown node type: {0:?}", pair.as_rule())),
     }
 }
