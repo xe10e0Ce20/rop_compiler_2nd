@@ -17,19 +17,17 @@ param_list  = { identifier ~ ("," ~ identifier)* }
 instruction = { "@" ~ (offset_cmd | filler_cmd) }
 offset_cmd  = { "offset" ~ "(" ~ hex_number ~ ")" }
 filler_cmd  = { "filler" ~ "(" ~ filler_arg ~ ")" }
-filler_arg  = @{ ASCII_HEX_DIGIT }
+filler_arg  = @{ ASCII_HEX_DIGIT+ }
 
 // 代码块: block name { ... }
 block       = { "block" ~ identifier ~ "{" ~ block_content* ~ "}" }
 
-// 块内允许的内容
 block_content = _{ label_def | macro_call | value_expr | instruction | yield_keyword }
 yield_keyword = { "yield" }
 
-// 表达式：支持运算符 + - | 以及各种项
 value_expr  = { expr_term ~ (binary_op ~ expr_term)* }
 binary_op   = { "+" | "-" | "|" }
-expr_term   = { hex_number | byte_number | address_ref | expr_group | bracket_expr }
+expr_term   = { hex_number | address_ref | byte_number | expr_group | bracket_expr }
 expr_group  = { "(" ~ value_expr ~ ")" }
 bracket_expr = { "[" ~ value_expr ~ "]" }
 
@@ -39,13 +37,14 @@ address_ref = @{ "&"? ~ identifier }
 // 标签定义
 label_def   = { identifier ~ ":" }
 
-// 宏调用：name(args) 可能后跟内联代码体
+// 宏调用
 macro_arg = { value_expr }
 macro_call = { identifier ~ "(" ~ (macro_arg ~ ("," ~ macro_arg)*)? ~ ")" ~ (macro_body)? }
 macro_body  = { "{" ~ block_content* ~ "}" }
 
 // 数值字面量
-hex_number  = @{ "0x"? ~ (ASCII_HEX_DIGIT | ".")+ }
+hex_number  = @{ "0x" ~ (ASCII_HEX_DIGIT | ".")+ }
+
 byte_number = @{ (ASCII_HEX_DIGIT | "."){2} ~ !ASCII_ALPHANUMERIC }
 
 // 标识符与关键字
