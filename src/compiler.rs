@@ -105,7 +105,7 @@ impl Compiler {
                             span: (span.start, span.len()).into(),
                         }.into());
                     }
-                    self.process_instruction(inst, &span)?;
+                    self.process_instruction(inst, span)?;
                 },
                 TopLevelItem::Block(block) => self.process_block(block, dry_run)?,
                 _ => {}
@@ -114,7 +114,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn process_instruction(&mut self, inst: &Instruction, span: &Range<usize>) -> Result<()> {
+    fn process_instruction(&mut self, inst: &Instruction, _span: &Range<usize>) -> Result<()> {
         match inst {
             Instruction::Offset(new_offset) => { self.base_address = *new_offset; }
             Instruction::SetFiller(c) => { self.current_filler = *c; }
@@ -272,16 +272,51 @@ impl Compiler {
                     }
                 })?;
     
-                let mut next_env = arg_env.clone();
-                for (i, param) in macro_def.params.iter().enumerate() {
-                    if let Some(arg_spanned_expr) = args.get(i) {
-                        let rop_val = self.evaluate_expr(&arg_spanned_expr.node, &arg_spanned_expr.span, arg_env, dry_run)?;
-                        next_env.insert(param.clone(), rop_val);
-                    }
+                // ----- 参数匹配与默认值处理 -----
+                let num_params = macro_def.params.len();
+                if args.len() > num_params {
+                    return Err(RopError::CompileError {
+                        message: format!("宏 '{}' 需要 {} 个参数，但提供了 {} 个 / Macro '{}' expects {} arguments, but {} provided",
+                                         name, num_params, args.len(), name, num_params, args.len()),
+                        span: (node_span.start, node_span.len()).into(),
+                    }.into());
                 }
 
-                // 宏体内本地标签隔离混淆重命名 (使用深层递归版)
-                // Local label isolation and obfuscation renaming in macro body (deep recursive version)
+                let mut next_env = arg_env.clone();
+
+                for (i, param_def) in macro_def.params.iter().enumerate() {
+                    let val = if i < args.len() {
+                        // 显式传入的参数
+                        let spanned_expr = &args[i];
+                        self.evaluate_expr(&spanned_expr.node, &spanned_expr.span, arg_env, dry_run)?
+                    } else {
+                        // 使用默认值
+                        if let Some(ref default_expr) = param_def.default {
+                            self.evaluate_expr(default_expr, node_span, &next_env, dry_run)?
+                        } else {
+                            return Err(RopError::CompileError {
+                                message: format!("宏 '{}' 的参数 '{}' 缺少值且没有默认值 / Missing value for parameter '{}' of macro '{}' without default",
+                                                 name, param_def.name, param_def.name, name),
+                                span: (node_span.start, node_span.len()).into(),
+                            }.into());
+                        }
+                    };
+
+                    // 类型/长度检查
+                    if let Some(ref ts) = param_def.type_spec {
+                        if val.len != ts.byte_len {
+                            return Err(RopError::CompileError {
+                                message: format!("宏 '{}' 的参数 '{}' 期望 {} 字节，但得到 {} 字节 / Parameter '{}' of macro '{}' expects {} bytes, but got {} bytes",
+                                                 name, param_def.name, ts.byte_len, val.len, param_def.name, name, ts.byte_len, val.len),
+                                span: (node_span.start, node_span.len()).into(),
+                            }.into());
+                        }
+                    }
+
+                    next_env.insert(param_def.name.clone(), val);
+                }
+
+                // 局部标签重命名
                 for wrapper in macro_def.body.iter_mut() {
                     Self::rename_local_labels_in_node(&mut wrapper.node, name, call_id);
                 }

@@ -1,4 +1,3 @@
-// src/parser.rs
 use pest::Parser;
 use pest::iterators::Pair;
 use miette::Result;
@@ -21,7 +20,6 @@ pub fn parse_to_ast(source: &str) -> Result<RopFile, miette::Error> {
             span: (start, end - start).into(),
         }
     })?;
-    
     Ok(build_file(parsed.next().unwrap())?)
 }
 
@@ -47,6 +45,28 @@ fn build_file(pair: Pair<Rule>) -> Result<RopFile> {
     Ok(RopFile { items })
 }
 
+fn parse_param(pair: Pair<Rule>) -> ParamDef {
+    let mut inner = pair.into_inner();
+    let name = inner.next().unwrap().as_str().to_string();
+    let mut type_spec = None;
+    let mut default = None;
+
+    for part in inner {
+        match part.as_rule() {
+            Rule::type_spec => {
+                let num_str = part.as_str().trim_end_matches('b');
+                let byte_len: usize = num_str.parse().unwrap(); // 语法已保证纯数字
+                type_spec = Some(TypeSpec { byte_len });
+            }
+            Rule::value_expr => {
+                default = Some(build_expr(part));
+            }
+            _ => {}
+        }
+    }
+    ParamDef { name, type_spec, default }
+}
+
 fn build_macro_def(pair: Pair<Rule>) -> Result<MacroDef> {
     let mut inner = pair.into_inner();
     let name = inner.next().unwrap().as_str().to_string();
@@ -57,7 +77,7 @@ fn build_macro_def(pair: Pair<Rule>) -> Result<MacroDef> {
         match item.as_rule() {
             Rule::param_list => {
                 for p in item.into_inner() {
-                    params.push(p.as_str().to_string());
+                    params.push(parse_param(p));
                 }
             }
             Rule::value_expr | Rule::macro_call | Rule::instruction | Rule::yield_keyword | Rule::label_def => {
@@ -73,6 +93,7 @@ fn build_macro_def(pair: Pair<Rule>) -> Result<MacroDef> {
     Ok(MacroDef { name, params, body })
 }
 
+// build_instruction 增加 span 参数（已改）
 fn build_instruction(pair: Pair<Rule>, span: &Range<usize>) -> Result<Instruction> {
     let inner = pair.into_inner().next()
         .ok_or_else(|| RopError::SyntaxError {

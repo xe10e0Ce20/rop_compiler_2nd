@@ -1,15 +1,25 @@
-// 在 ast.rs 顶部添加导入
 use std::ops::Range;
 
-/// 带有位置跨度的包装器
+/// 参数类型声明，例如 4b 代表 4 字节
+#[derive(Debug, Clone)]
+pub struct TypeSpec {
+    pub byte_len: usize,
+}
+
+/// 宏参数定义
+#[derive(Debug, Clone)]
+pub struct ParamDef {
+    pub name: String,
+    pub type_spec: Option<TypeSpec>,
+    pub default: Option<Expr>,   // 默认值表达式（未求值）
+}
+
 #[derive(Debug, Clone)]
 pub struct Spanned<T> {
     pub node: T,
-    /// 字符偏离量区间：[start_byte, end_byte]，专门用于 miette 错误高亮或前端计算行/列
     pub span: Range<usize>,
 }
 
-/// 整个 ROP 文件的顶层 AST
 #[derive(Debug, Clone)]
 pub struct RopFile {
     pub items: Vec<TopLevelItem>,
@@ -26,8 +36,8 @@ pub enum TopLevelItem {
 #[derive(Debug, Clone)]
 pub struct MacroDef {
     pub name: String,
-    pub params: Vec<String>,
-    pub body: Vec<Spanned<Node>>, // 升级为带位置标记的节点
+    pub params: Vec<ParamDef>,          // 改用 ParamDef 列表
+    pub body: Vec<Spanned<Node>>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,23 +49,23 @@ pub enum Instruction {
 #[derive(Debug, Clone)]
 pub struct Block {
     pub name: String,
-    pub contents: Vec<Spanned<Node>>, // 升级为带位置标记的节点
+    pub contents: Vec<Spanned<Node>>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Node {
     Instruction(Instruction),
     Yield,
-    Value(Spanned<Expr>), // 升级表达式位置
+    Value(Spanned<Expr>),
     MacroCall {
         name: String,
-        args: Vec<Spanned<Expr>>, // 升级参数表达式位置
-        body: Option<Vec<Spanned<Node>>>, // 升级宏内容位置
+        args: Vec<Spanned<Expr>>,
+        body: Option<Vec<Spanned<Node>>>,
     },
     Label(String),
 }
 
-// ----------------- 以下保持原有逻辑不变 -----------------
+// RopValue 及其方法保持不变...
 #[derive(Debug, Clone, Copy)]
 pub struct RopValue {
     pub val: u64,
@@ -93,7 +103,7 @@ impl RopValue {
 pub enum ExprToken {
     Raw(String),
     Op(String),
-    Bracket(Expr), // 这里的 Expr 被解析函数递归调用
+    Bracket(Expr),
     Group(Expr),
 }
 

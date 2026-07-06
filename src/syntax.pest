@@ -1,4 +1,4 @@
-// 空白与注释
+// 空白与注释保持不变
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 
@@ -8,19 +8,20 @@ file = { SOI ~ (import_cmd | macro_def | instruction | block)* ~ EOI }
 import_cmd  = { "@import" ~ "(" ~ path_str ~ ")" }
 path_str    = @{ (!")" ~ !WHITESPACE ~ ANY)+ } 
 
-// 宏定义: def name(params) { body }
+// 宏定义：新增 param 支持类型声明和默认值
 macro_def   = { "def" ~ identifier ~ "(" ~ param_list? ~ ")" ~ "{" ~ block_content* ~ "}" }
-param_list  = { identifier ~ ("," ~ identifier)* }
+param_list  = { param ~ ("," ~ param)* }
+param       = { identifier ~ (":" ~ type_spec)? ~ ("=" ~ value_expr)? }
+type_spec   = @{ ASCII_DIGIT+ ~ "b" }   // 例如 4b, 8b
 
-// 伪指令: @offset(...) 或 @filler(...)
+// 伪指令保持不变
 instruction = { "@" ~ (offset_cmd | filler_cmd) }
 offset_cmd  = { "offset" ~ "(" ~ hex_number ~ ")" }
 filler_cmd  = { "filler" ~ "(" ~ filler_arg ~ ")" }
 filler_arg  = @{ ASCII_HEX_DIGIT+ }
 
-// 代码块: block name { ... }
+// 代码块、内容、表达式均保持不变
 block       = { "block" ~ identifier ~ "{" ~ block_content* ~ "}" }
-
 block_content = _{ label_def | macro_call | value_expr | instruction | yield_keyword }
 yield_keyword = { "yield" }
 
@@ -30,20 +31,17 @@ expr_term   = { hex_number | address_ref | byte_number | expr_group | bracket_ex
 expr_group  = { "(" ~ value_expr ~ ")" }
 bracket_expr = { "[" ~ value_expr ~ "]" }
 
-// 地址引用：可选的 & 前缀
 address_ref = @{ "&"? ~ identifier }
 
-// 标签定义
 label_def   = { identifier ~ ":" }
 
 // 宏调用
-macro_arg = { value_expr }
-macro_call = { identifier ~ "(" ~ (macro_arg ~ ("," ~ macro_arg)*)? ~ ")" ~ (macro_body)? }
+macro_arg   = { value_expr }
+macro_call  = { identifier ~ "(" ~ (macro_arg ~ ("," ~ macro_arg)*)? ~ ")" ~ (macro_body)? }
 macro_body  = { "{" ~ block_content* ~ "}" }
 
 // 数值字面量
 hex_number  = @{ "0x" ~ (ASCII_HEX_DIGIT | ".")+ }
-
 byte_number = @{ (ASCII_HEX_DIGIT | "."){2} ~ !ASCII_ALPHANUMERIC }
 
 // 标识符与关键字
