@@ -35,7 +35,6 @@ impl Compiler {
     }
 
     /// 递归重命名表达式 (Expr) 中的局部标签
-    /// Recursively rename local labels in expression (Expr)
     fn rename_local_labels_in_expr(expr: &mut Expr, name: &str, call_id: usize) {
         for token in expr.tokens.iter_mut() {
             match token {
@@ -51,7 +50,6 @@ impl Compiler {
     }
 
     /// 递归重命名节点 (Node) 及其所有子作用域中的局部标签
-    /// Recursively rename local labels in node and all child scopes
     fn rename_local_labels_in_node(node: &mut Node, name: &str, call_id: usize) {
         match node {
             Node::Label(n) if n.starts_with('_') => {
@@ -61,13 +59,9 @@ impl Compiler {
                 Self::rename_local_labels_in_expr(&mut spanned_expr.node, name, call_id);
             }
             Node::MacroCall { args, body, .. } => {
-                // 如果宏的参数里传了局部变量，也要重命名
-                // If local variables are passed in macro arguments, rename them too
                 for arg in args.iter_mut() {
                     Self::rename_local_labels_in_expr(&mut arg.node, name, call_id);
                 }
-                // 如果宏自带了 trailing body (大括号里的内容)，继续递归
-                // If the macro has a trailing body (content in curly braces), continue recursion
                 if let Some(b) = body.as_mut() {
                     for child in b.iter_mut() {
                         Self::rename_local_labels_in_node(&mut child.node, name, call_id);
@@ -250,7 +244,6 @@ impl Compiler {
                         let start_off = self.block_outputs.get(block_name).map(|v| v.len()).unwrap_or(0);
                         let bytes = rop_val.val.to_be_bytes()[(8 - rop_val.len)..].to_vec();
                         let len = bytes.len();
-                        // 记录映射
                         self.span_map.entry(block_name.clone())
                             .or_default()
                             .push((spanned_expr.span.clone(), start_off..start_off + len));
@@ -270,10 +263,12 @@ impl Compiler {
             }
             Node::MacroCall { name, args, body } => {
                 let start_off = if !dry_run {
-                        self.current_block_name.as_ref()
-                            .and_then(|n| self.block_outputs.get(n).map(|v| v.len()))
-                            .unwrap_or(0)
-                    } else { 0 };
+                    self.current_block_name.as_ref()
+                        .and_then(|n| self.block_outputs.get(n).map(|v| v.len()))
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
 
                 let count = self.macro_call_counter.entry(name.clone()).or_insert(0);
                 *count += 1;
@@ -286,7 +281,6 @@ impl Compiler {
                     }
                 })?;
     
-                // ----- 参数匹配与默认值处理 -----
                 let num_params = macro_def.params.len();
                 if args.len() > num_params {
                     return Err(RopError::CompileError {
@@ -300,11 +294,9 @@ impl Compiler {
 
                 for (i, param_def) in macro_def.params.iter().enumerate() {
                     let val = if i < args.len() {
-                        // 显式传入的参数
                         let spanned_expr = &args[i];
                         self.evaluate_expr(&spanned_expr.node, &spanned_expr.span, arg_env, dry_run)?
                     } else {
-                        // 使用默认值
                         if let Some(ref default_expr) = param_def.default {
                             self.evaluate_expr(default_expr, node_span, &next_env, dry_run)?
                         } else {
@@ -316,7 +308,6 @@ impl Compiler {
                         }
                     };
 
-                    // 类型/长度检查
                     if let Some(ref ts) = param_def.type_spec {
                         if val.len != ts.byte_len {
                             return Err(RopError::CompileError {
@@ -335,13 +326,15 @@ impl Compiler {
                     Self::rename_local_labels_in_node(&mut wrapper.node, name, call_id);
                 }
 
+                // 展开宏体，内部节点会自动记录细粒度的 span_map
                 for n in &macro_def.body {
                     self.process_node(&n.node, &n.span, body, &next_env, dry_run)?;
                 }
 
+                // 整体映射：整个宏调用源码范围对应其生成的所有字节
                 if !dry_run {
                     if let Some(ref block_name) = self.current_block_name {
-                        let end_off = self.block_outputs.get(block_name).map(|v| v.len()).unwrap_or(0);
+                        let end_off = self.block_outputs.get(block_name).map(|v| v.len()).unwrap_or(start_off);
                         if end_off > start_off {
                             self.span_map.entry(block_name.clone())
                                 .or_default()
