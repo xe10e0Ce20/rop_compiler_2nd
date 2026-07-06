@@ -3,7 +3,6 @@ use crate::compiler::Compiler;
 use crate::parser;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
-use js_sys::Function;
 
 #[derive(serde::Serialize)]
 pub struct WebCompileResult {
@@ -12,6 +11,7 @@ pub struct WebCompileResult {
     pub line: Option<usize>,
     pub column: Option<usize>,
     pub blocks: HashMap<String, String>,
+    pub span_map: HashMap<String, Vec<[usize; 4]>>,
 }
 
 fn calculate_position(source: &str, byte_offset: usize) -> (usize, usize) {
@@ -32,7 +32,6 @@ fn calculate_position(source: &str, byte_offset: usize) -> (usize, usize) {
 }
 
 fn handle_rope_error(err: miette::Error, source_code: &str, result: &mut WebCompileResult) {
-    // 关键修复：通过 dyn Error 下转型，而不是直接调用 err.downcast_ref
     let err_ref: &(dyn std::error::Error + 'static) = &*err;
     if let Some(rop_err) = err_ref.downcast_ref::<crate::errors::RopError>() {
         match rop_err {
@@ -61,13 +60,14 @@ fn handle_rope_error(err: miette::Error, source_code: &str, result: &mut WebComp
 }
 
 #[wasm_bindgen]
-pub fn compile_for_web(source_code: &str, fetch_lib_fn: Function) -> JsValue {
+pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsValue {
     let mut result = WebCompileResult {
         success: false,
         error_message: None,
         line: None,
         column: None,
         blocks: HashMap::new(),
+        span_map: HashMap::new(),
     };
 
     let ast_tree = match parser::parse_to_ast(source_code) {
@@ -115,10 +115,19 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: Function) -> JsValue {
     match compiler.compile(&ast_tree) {
         Ok(_) => {
             result.success = true;
+            // 填充 blocks
             for (block_name, bytes) in compiler.block_outputs {
                 let hex_string: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                 result.blocks.insert(block_name, hex_string);
             }
+            // 填充 span_map
+            let span_map: HashMap<String, Vec<[usize; 4]>> = compiler.span_map.into_iter().map(|(block, vec)| {
+                let mapped = vec.into_iter().map(|(src_span, out_range)| {
+                    [src_span.start, src_span.end, out_range.start, out_range.end]
+                }).collect();
+                (block, mapped)
+            }).collect();
+            result.span_map = span_map;
         }
         Err(e) => {
             handle_rope_error(e, source_code, &mut result);
@@ -138,7 +147,7 @@ pub struct WebAutocompleteMetadata {
 #[derive(serde::Serialize)]
 pub struct MacroParamInfo {
     pub name: String,
-    pub type_spec: Option<String>,   // 例如 "4b"，无声明则为 null
+    pub type_spec: Option<String>,
     pub has_default: bool,
 }
 
