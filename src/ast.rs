@@ -19,7 +19,7 @@ pub struct RopFile {
 pub enum TopLevelItem {
     Import(String),
     MacroDef(MacroDef),
-    Instruction(Instruction),
+    Instruction(Instruction, Range<usize>),
     Block(Block),
 }
 

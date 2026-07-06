@@ -4,6 +4,7 @@ use pest::iterators::Pair;
 use miette::Result;
 use crate::ast::*;
 use crate::errors::RopError;
+use std::ops::Range;
 
 #[derive(pest_derive::Parser)]
 #[grammar = "syntax.pest"]
@@ -11,7 +12,6 @@ pub struct RopParser;
 
 pub fn parse_to_ast(source: &str) -> Result<RopFile, miette::Error> {
     let mut parsed = RopParser::parse(Rule::file, source).map_err(|e| {
-        // 精准提取 Pest 生成的具体位置偏离量信息，转换为 Miette 强化的跨度
         let (start, end) = match e.location {
             pest::error::InputLocation::Pos(pos) => (pos, pos + 1),
             pest::error::InputLocation::Span((start, end)) => (start, end),
@@ -35,7 +35,11 @@ fn build_file(pair: Pair<Rule>) -> Result<RopFile> {
                 items.push(TopLevelItem::Import(path));
             }
             Rule::macro_def => items.push(TopLevelItem::MacroDef(build_macro_def(inner)?)),
-            Rule::instruction => items.push(TopLevelItem::Instruction(build_instruction(inner)?)),
+            Rule::instruction => {
+                let span = inner.as_span().start()..inner.as_span().end();
+                let inst = build_instruction(inner, &span)?;
+                items.push(TopLevelItem::Instruction(inst, span));
+            }
             Rule::block => items.push(TopLevelItem::Block(build_block(inner)?)),
             _ => {}
         }
@@ -69,27 +73,45 @@ fn build_macro_def(pair: Pair<Rule>) -> Result<MacroDef> {
     Ok(MacroDef { name, params, body })
 }
 
-fn build_instruction(pair: Pair<Rule>) -> Result<Instruction> {
+fn build_instruction(pair: Pair<Rule>, span: &Range<usize>) -> Result<Instruction> {
     let inner = pair.into_inner().next()
-        .ok_or_else(|| miette::miette!("指令内容为空 / Instruction content is empty"))?;
+        .ok_or_else(|| RopError::SyntaxError {
+            message: "指令内容为空 / Instruction content is empty".to_string(),
+            span: (span.start, span.len()).into(),
+        })?;
 
     match inner.as_rule() {
         Rule::offset_cmd => {
             let hex_pair = inner.into_inner().next()
-                .ok_or_else(|| miette::miette!("offset 缺失参数 / Missing argument for offset"))?;
+                .ok_or_else(|| RopError::SyntaxError {
+                    message: "offset 指令缺失参数 / Missing argument for offset directive".to_string(),
+                    span: (span.start, span.len()).into(),
+                })?;
             let hex_str = hex_pair.as_str().trim_start_matches("0x");
             let val = u16::from_str_radix(hex_str, 16)
-                .map_err(|e| miette::miette!("非法偏移值: {0}", e))?;
+                .map_err(|e| RopError::SyntaxError {
+                    message: format!("非法的偏移值 / Invalid offset value: {}", e),
+                    span: (span.start, span.len()).into(),
+                })?;
             Ok(Instruction::Offset(val))
         }
         Rule::filler_cmd => {
             let hex_pair = inner.into_inner().next()
-                .ok_or_else(|| miette::miette!("filler 缺失参数 / Missing argument for filler"))?;
+                .ok_or_else(|| RopError::SyntaxError {
+                    message: "filler 指令缺失参数 / Missing argument for filler directive".to_string(),
+                    span: (span.start, span.len()).into(),
+                })?;
             let c = hex_pair.as_str().chars().next()
-                .ok_or_else(|| miette::miette!("无效填充符"))?;
+                .ok_or_else(|| RopError::SyntaxError {
+                    message: "无效的填充字符 / Invalid filler character".to_string(),
+                    span: (span.start, span.len()).into(),
+                })?;
             Ok(Instruction::SetFiller(c))
         }
-        _ => Err(miette::miette!("未知指令: {:?}", inner.as_rule())),
+        _ => Err(RopError::SyntaxError {
+            message: format!("未知指令 / Unknown directive: {:?}", inner.as_rule()),
+            span: (span.start, span.len()).into(),
+        }.into()),
     }
 }
 
@@ -188,7 +210,10 @@ fn build_node(pair: Pair<Rule>) -> Result<Node> {
             }
             Ok(Node::MacroCall { name, args, body })
         }
-        Rule::instruction => Ok(Node::Instruction(build_instruction(pair)?)),
-        _ => Err(miette::miette!("未知节点类型: {:?}", pair.as_rule())),
+        Rule::instruction => {
+            let span = pair.as_span().start()..pair.as_span().end();
+            Ok(Node::Instruction(build_instruction(pair, &span)?))
+        }
+        _ => Err(miette::miette!("未知节点类型 / Unknown node type: {:?}", pair.as_rule())),
     }
 }

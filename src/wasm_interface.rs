@@ -34,25 +34,31 @@ fn calculate_position(source: &str, byte_offset: usize) -> (usize, usize) {
 
 /// 辅助清洗提取真实错误数据
 fn handle_rope_error(err: miette::Error, source_code: &str, result: &mut WebCompileResult) {
-    if let Some(rop_err) = err.downcast_ref::<crate::errors::RopError>() {
+    // 正确下转：先解引用为 trait object，再 downcast
+    let err_ref: &(dyn std::error::Error + 'static) = &*err;
+    if let Some(rop_err) = err_ref.downcast_ref::<crate::errors::RopError>() {
         match rop_err {
             crate::errors::RopError::SyntaxError { message, span } => {
                 let (l, c) = calculate_position(source_code, span.offset());
                 result.line = Some(l);
                 result.column = Some(c);
-                // 强行注入文本开头，确保前端闭眼都能看到
-                result.error_message = Some(format!("[行 {}, 列 {}] 语法解析错误: {}", l, c, message));
+                result.error_message = Some(format!(
+                    "[行 {}, 列 {}] [Line {}, Column {}] 语法解析错误 / Syntax parsing error: {}",
+                    l, c, l, c, message
+                ));
             }
             crate::errors::RopError::CompileError { message, span } => {
                 let (l, c) = calculate_position(source_code, span.offset());
                 result.line = Some(l);
                 result.column = Some(c);
-                // 强行注入文本开头
-                result.error_message = Some(format!("[行 {}, 列 {}] 编译语义错误: {}", l, c, message));
+                result.error_message = Some(format!(
+                    "[行 {}, 列 {}] [Line {}, Column {}] 编译语义错误 / Compilation semantic error: {}",
+                    l, c, l, c, message
+                ));
             }
         }
     } else {
-        result.error_message = Some(format!("未分类异常: {:?}", err));
+        result.error_message = Some(format!("未分类异常 / Unclassified error: {:?}", err));
     }
 }
 

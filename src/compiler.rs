@@ -33,6 +33,7 @@ impl Compiler {
     }
 
     /// 递归重命名表达式 (Expr) 中的局部标签
+    /// Recursively rename local labels in expression (Expr)
     fn rename_local_labels_in_expr(expr: &mut Expr, name: &str, call_id: usize) {
         for token in expr.tokens.iter_mut() {
             match token {
@@ -48,6 +49,7 @@ impl Compiler {
     }
 
     /// 递归重命名节点 (Node) 及其所有子作用域中的局部标签
+    /// Recursively rename local labels in node and all child scopes
     fn rename_local_labels_in_node(node: &mut Node, name: &str, call_id: usize) {
         match node {
             Node::Label(n) if n.starts_with('_') => {
@@ -58,10 +60,12 @@ impl Compiler {
             }
             Node::MacroCall { args, body, .. } => {
                 // 如果宏的参数里传了局部变量，也要重命名
+                // If local variables are passed in macro arguments, rename them too
                 for arg in args.iter_mut() {
                     Self::rename_local_labels_in_expr(&mut arg.node, name, call_id);
                 }
                 // 如果宏自带了 trailing body (大括号里的内容)，继续递归
+                // If the macro has a trailing body (content in curly braces), continue recursion
                 if let Some(b) = body.as_mut() {
                     for child in b.iter_mut() {
                         Self::rename_local_labels_in_node(&mut child.node, name, call_id);
@@ -94,12 +98,14 @@ impl Compiler {
     fn run_pass(&mut self, ast: &RopFile, dry_run: bool) -> Result<()> {
         for item in &ast.items {
             match item {
-                TopLevelItem::Instruction(inst) => {
-                    // 顶层指令没有外围 Span，暂代用默认错误，或通过重构 TopLevelItem 获取
+                TopLevelItem::Instruction(inst, span) => {
                     if self.current_block_name.is_none() {
-                        return Err(miette::miette!("语法错误：指令必须定义在 block 内部"));
+                        return Err(RopError::CompileError {
+                            message: "语法错误：指令必须定义在 block 内部 / Syntax error: directive must be defined inside a block".to_string(),
+                            span: (span.start, span.len()).into(),
+                        }.into());
                     }
-                    self.process_instruction(inst)?;
+                    self.process_instruction(inst, &span)?;
                 },
                 TopLevelItem::Block(block) => self.process_block(block, dry_run)?,
                 _ => {}
@@ -108,7 +114,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn process_instruction(&mut self, inst: &Instruction) -> Result<()> {
+    fn process_instruction(&mut self, inst: &Instruction, span: &Range<usize>) -> Result<()> {
         match inst {
             Instruction::Offset(new_offset) => { self.base_address = *new_offset; }
             Instruction::SetFiller(c) => { self.current_filler = *c; }
@@ -144,14 +150,20 @@ impl Compiler {
         if target_key.starts_with("0x") {
             let hex_str = target_key.trim_start_matches("0x");
             let v = u64::from_str_radix(hex_str, 16).map_err(|e| {
-                RopError::CompileError { message: format!("无效Hex: {}", e), span: (span.start, span.len()).into() }
+                RopError::CompileError { 
+                    message: format!("无效的十六进制数值 / Invalid hex value: {}", e), 
+                    span: (span.start, span.len()).into() 
+                }
             })?;
             return Ok(RopValue::new(v, (hex_str.len() + 1) / 2));
         }
         
         if target_key.len() == 2 && target_key.chars().all(|c| c.is_ascii_hexdigit()) {
             let v = u64::from_str_radix(&target_key, 16).map_err(|e| {
-                RopError::CompileError { message: format!("无效Byte: {}", e), span: (span.start, span.len()).into() }
+                RopError::CompileError { 
+                    message: format!("无效的字节值 / Invalid byte value: {}", e), 
+                    span: (span.start, span.len()).into() 
+                }
             })?;
             return Ok(RopValue::new(v, 1));
         } 
@@ -165,7 +177,7 @@ impl Compiler {
             Ok(RopValue::new(0, 2))
         } else {
             Err(RopError::CompileError {
-                message: format!("未定义的标识符 '{}'", target_key),
+                message: format!("未定义的标识符 '{}' / Undefined identifier '{}'", target_key, target_key),
                 span: (span.start, span.len()).into(),
             }.into())
         }
@@ -183,7 +195,10 @@ impl Compiler {
                     val.val = RopValue::reverse_rop_bytes(val.val, val.len);
                     Ok(val)
                 }
-                ExprToken::Op(_) => Err(RopError::CompileError{ message: "语法错误：此处不应出现操作符".to_string(), span: (span.start, span.len()).into() }.into()),
+                ExprToken::Op(_) => Err(RopError::CompileError{ 
+                    message: "语法错误：此处不应出现操作符 / Syntax error: operator should not appear here".to_string(), 
+                    span: (span.start, span.len()).into() 
+                }.into()),
             }
         };
 
@@ -193,19 +208,28 @@ impl Compiler {
         while i + 1 < expr.tokens.len() {
             let op = match &expr.tokens[i] {
                 ExprToken::Op(o) => o,
-                _ => return Err(RopError::CompileError{ message: "语法错误：期待操作符".to_string(), span: (span.start, span.len()).into() }.into()),
+                _ => return Err(RopError::CompileError{ 
+                    message: "语法错误：此处应该是一个操作符 / Syntax error: expected an operator".to_string(), 
+                    span: (span.start, span.len()).into() 
+                }.into()),
             };
             let next = eval_token(&expr.tokens[i + 1])?;
             
             current = match op.as_str() {
                 "+" | "-" => current.math_op(&next, op),
                 "|" => current.concat(&next),
-                _ => return Err(RopError::CompileError{ message: format!("不支持的运算符: {}", op), span: (span.start, span.len()).into() }.into()),
+                _ => return Err(RopError::CompileError{ 
+                    message: format!("不支持的运算符 / Unsupported operator: {}", op), 
+                    span: (span.start, span.len()).into() 
+                }.into()),
             };
             i += 2;
         }
         if i < expr.tokens.len() {
-            return Err(RopError::CompileError{ message: "表达式存在未配对的操作符".to_string(), span: (span.start, span.len()).into() }.into());
+            return Err(RopError::CompileError{ 
+                message: "表达式存在未配对的操作符 / Expression has unmatched operator".to_string(), 
+                span: (span.start, span.len()).into() 
+            }.into());
         }
         Ok(current)
     }
@@ -216,7 +240,7 @@ impl Compiler {
                 if dry_run { self.symbol_table.insert(name.clone(), self.current_offset); }
                 Ok(())
             }
-            Node::Instruction(inst) => self.process_instruction(inst),
+            Node::Instruction(inst) => self.process_instruction(inst, node_span),
             Node::Value(spanned_expr) => {
                 let rop_val = self.evaluate_expr(&spanned_expr.node, &spanned_expr.span, arg_env, dry_run)?;
                 if !dry_run {
@@ -242,7 +266,10 @@ impl Compiler {
                 let call_id = *count;
 
                 let mut macro_def = self.macro_registry.get(name).cloned().ok_or_else(|| {
-                    RopError::CompileError { message: format!("宏 {} 未定义", name), span: (node_span.start, node_span.len()).into() }
+                    RopError::CompileError { 
+                        message: format!("未定义的宏 / Undefined macro: {}", name), 
+                        span: (node_span.start, node_span.len()).into() 
+                    }
                 })?;
     
                 let mut next_env = arg_env.clone();
@@ -253,12 +280,11 @@ impl Compiler {
                     }
                 }
 
-                // ---------------- 核心修改点在这里 ----------------
                 // 宏体内本地标签隔离混淆重命名 (使用深层递归版)
+                // Local label isolation and obfuscation renaming in macro body (deep recursive version)
                 for wrapper in macro_def.body.iter_mut() {
                     Self::rename_local_labels_in_node(&mut wrapper.node, name, call_id);
                 }
-                // --------------------------------------------------
 
                 for n in &macro_def.body {
                     self.process_node(&n.node, &n.span, body, &next_env, dry_run)?;
