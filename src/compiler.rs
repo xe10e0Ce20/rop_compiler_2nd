@@ -1,3 +1,4 @@
+// src/compiler.rs
 use std::collections::HashMap;
 use std::ops::Range;
 use miette::Result;
@@ -15,6 +16,9 @@ pub struct Compiler {
     pub macro_call_counter: HashMap<String, usize>,
     pub current_filler: char,
     pub span_map: HashMap<String, Vec<(Range<usize>, Range<usize>)>>,
+    // 每个 block 的基址和累积偏移（用于同名 block 拼接）
+    block_base: HashMap<String, u16>,
+    block_offset: HashMap<String, u16>,
 }
 
 impl Compiler {
@@ -30,6 +34,8 @@ impl Compiler {
             raw_symbol_table: HashMap::new(),
             macro_call_counter: HashMap::new(),
             span_map: HashMap::new(),
+            block_base: HashMap::new(),
+            block_offset: HashMap::new(),
         }
     }
 
@@ -79,13 +85,21 @@ impl Compiler {
                 self.register_macro(m.clone());
             }
         }
+        // 干运行前清空 block 状态
+        self.block_base.clear();
+        self.block_offset.clear();
         self.run_pass(ast, true)?;
-        self.current_offset = self.base_address;
+
+        // 干运行后重置所有状态，准备真实编译
+        self.block_base.clear();
+        self.block_offset.clear();
+        self.current_offset = 0;
+        self.base_address = 0;
         self.block_outputs.clear();
         self.macro_call_counter.clear();
         self.current_block_name = None;
         self.run_pass(ast, false)?;
-        Ok(self.base_address)
+        Ok(self.base_address) // 注意：返回 base_address 可能无意义，保留原样
     }
 
     fn run_pass(&mut self, ast: &RopFile, dry_run: bool) -> Result<()> {
@@ -99,7 +113,7 @@ impl Compiler {
                         }.into());
                     }
                     self.process_instruction(inst, span)?;
-                }
+                },
                 TopLevelItem::Block(block) => self.process_block(block, dry_run)?,
                 _ => {}
             }
@@ -115,30 +129,41 @@ impl Compiler {
         Ok(())
     }
 
+    
     fn process_block(&mut self, block: &Block, dry_run: bool) -> Result<()> {
-        // 保存当前全局偏移和基址
-        let previous_offset = self.current_offset;
-        let previous_base = self.base_address;
-        // 每个 block 独立，偏移和基址从 0 开始（block 内部的 @offset 可修改基址）
-        self.current_offset = 0;
-        self.base_address = 0;
+        let name = block.name.clone();
+
+        // 恢复该 block 的上次状态（同名拼接）
+        if let Some(&base) = self.block_base.get(&name) {
+            self.base_address = base;
+        } else {
+            self.base_address = 0;
+        }
+        if let Some(&offset) = self.block_offset.get(&name) {
+            self.current_offset = offset;
+        } else {
+            self.current_offset = 0;
+        }
 
         if dry_run {
-            self.symbol_table.insert(block.name.clone(), self.current_offset);
+            // 干运行时符号表也基于当前偏移
+            self.symbol_table.insert(name.clone(), self.current_offset);
         } else {
-            self.block_outputs.entry(block.name.clone()).or_insert(Vec::new());
+            self.block_outputs.entry(name.clone()).or_insert(Vec::new());
         }
+
         let old_block = self.current_block_name.clone();
-        self.current_block_name = Some(block.name.clone());
+        self.current_block_name = Some(name.clone());
 
         for spanned_node in &block.contents {
             self.process_node(&spanned_node.node, &spanned_node.span, &None, &HashMap::new(), dry_run)?;
         }
-        self.current_block_name = old_block;
 
-        // 恢复全局状态
-        self.current_offset = previous_offset;
-        self.base_address = previous_base;
+        // 保存该 block 的最终状态，供后续同名 block 使用
+        self.block_base.insert(name.clone(), self.base_address);
+        self.block_offset.insert(name.clone(), self.current_offset);
+
+        self.current_block_name = old_block;
         Ok(())
     }
 
