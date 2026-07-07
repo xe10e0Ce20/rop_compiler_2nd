@@ -145,10 +145,7 @@ impl Compiler {
             self.current_offset = 0;
         }
 
-        if dry_run {
-            // 干运行时符号表也基于当前偏移
-            self.symbol_table.insert(name.clone(), self.current_offset);
-        } else {
+        if !dry_run {
             self.block_outputs.entry(name.clone()).or_insert(Vec::new());
         }
 
