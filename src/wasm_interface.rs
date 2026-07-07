@@ -59,6 +59,24 @@ fn handle_rope_error(err: miette::Error, source_code: &str, result: &mut WebComp
     }
 }
 
+/// 将 UTF-8 字节偏移转换为 UTF-16 码元偏移（Monaco 使用的字符索引）
+fn byte_offset_to_utf16_offset(source: &str, byte_offset: usize) -> usize {
+    let mut utf16_count = 0;
+    let mut current_byte = 0;
+    for ch in source.chars() {
+        if current_byte >= byte_offset {
+            break;
+        }
+        current_byte += ch.len_utf8();
+        if current_byte > byte_offset {
+            // 偏移落在一个多字节字符的中间，返回该字符之前的长度
+            break;
+        }
+        utf16_count += ch.len_utf16();
+    }
+    utf16_count
+}
+
 #[wasm_bindgen]
 pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsValue {
     let mut result = WebCompileResult {
@@ -122,7 +140,7 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
                 result.blocks.insert(block_name, hex_string);
             }
 
-            // 填充 span_map，并过滤掉导入库的映射（只保留主文件范围）
+            // 填充 span_map，将字节偏移转换为 UTF-16 字符偏移
             let main_len = source_code.len();
             let span_map: HashMap<String, Vec<[usize; 4]>> = compiler
                 .span_map
@@ -130,9 +148,11 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
                 .map(|(block, vec)| {
                     let filtered: Vec<[usize; 4]> = vec
                         .into_iter()
-                        .filter(|(src_span, _)| src_span.start < main_len) // <-- 关键过滤
+                        .filter(|(src_span, _)| src_span.start < main_len)
                         .map(|(src_span, out_range)| {
-                            [src_span.start, src_span.end, out_range.start, out_range.end]
+                            let char_start = byte_offset_to_utf16_offset(source_code, src_span.start);
+                            let char_end = byte_offset_to_utf16_offset(source_code, src_span.end);
+                            [char_start, char_end, out_range.start, out_range.end]
                         })
                         .collect();
                     (block, filtered)
