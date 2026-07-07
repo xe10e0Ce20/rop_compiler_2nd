@@ -11,7 +11,7 @@ pub struct TypeSpec {
 pub struct ParamDef {
     pub name: String,
     pub type_spec: Option<TypeSpec>,
-    pub default: Option<Expr>,   // 默认值表达式（未求值）
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,7 +36,7 @@ pub enum TopLevelItem {
 #[derive(Debug, Clone)]
 pub struct MacroDef {
     pub name: String,
-    pub params: Vec<ParamDef>,          // 改用 ParamDef 列表
+    pub params: Vec<ParamDef>,
     pub body: Vec<Spanned<Node>>,
 }
 
@@ -65,37 +65,72 @@ pub enum Node {
     Label(String),
 }
 
-// RopValue 及其方法保持不变...
-#[derive(Debug, Clone, Copy)]
+/// 任意长度字节值（大端字节序）
+#[derive(Debug, Clone)]
 pub struct RopValue {
-    pub val: u64,
-    pub len: usize,
+    pub val: Vec<u8>,
+    pub len: usize,      // 始终等于 val.len()
 }
 
 impl RopValue {
-    pub fn new(val: u64, len: usize) -> Self { Self { val, len } }
-    pub fn math_op(&self, other: &Self, op: &str) -> Self {
-        let new_len = self.len.max(other.len);
-        let res = match op {
-            "+" => self.val.wrapping_add(other.val),
-            "-" => self.val.wrapping_sub(other.val),
-            _ => 0,
-        };
-        RopValue::new(res, new_len)
-    }
-    pub fn concat(&self, other: &Self) -> Self {
-        let new_val = (self.val << (other.len * 8)) | other.val;
-        RopValue::new(new_val, self.len + other.len)
-    }
-    pub fn reverse_rop_bytes(val: u64, len: usize) -> u64 {
-        let bytes = val.to_be_bytes();
-        let mut target_bytes = bytes[8 - len..].to_vec();
-        target_bytes.reverse();
-        let mut new_val = 0u64;
-        for (i, &b) in target_bytes.iter().enumerate() {
-            new_val |= (b as u64) << ((len - 1 - i) * 8);
+    /// 从 u64 和指定长度创建（用于地址、符号等，产生大端字节）
+    pub fn from_u64(val: u64, len: usize) -> Self {
+        let bytes = &val.to_be_bytes()[8 - len..];
+        Self {
+            val: bytes.to_vec(),
+            len,
         }
-        new_val
+    }
+
+    /// 从字节切片直接创建
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        let len = bytes.len();
+        Self { val: bytes, len }
+    }
+
+    /// 占位符构造（dry run 用）
+    pub fn placeholder(len: usize) -> Self {
+        Self {
+            val: vec![0; len],
+            len,
+        }
+    }
+
+    /// 数学运算（+、-），仅当两个值长度相同且 ≤8 时有效，结果长度取两者中较大者
+    pub fn math_op(&self, other: &Self, op: &str) -> Result<Self, String> {
+        if self.len > 8 || other.len > 8 {
+            return Err("数学运算仅支持 ≤8 字节的数值".into());
+        }
+        let a = self.to_u64();
+        let b = other.to_u64();
+        let res = match op {
+            "+" => a.wrapping_add(b),
+            "-" => a.wrapping_sub(b),
+            _ => return Err(format!("不支持的操作符: {}", op)),
+        };
+        Ok(RopValue::from_u64(res, self.len.max(other.len)))
+    }
+
+    /// 拼接（| 操作符），直接合并两个字节序列
+    pub fn concat(&self, other: &Self) -> Self {
+        let mut new_bytes = self.val.clone();
+        new_bytes.extend_from_slice(&other.val);
+        RopValue::from_bytes(new_bytes)
+    }
+
+    /// 反序整个字节序列（用于 [ ... ]）
+    pub fn reverse_bytes(&self) -> Self {
+        let mut bytes = self.val.clone();
+        bytes.reverse();
+        RopValue::from_bytes(bytes)
+    }
+
+    /// 转为 u64（用于需要数值的场景，如地址计算、数学运算）
+    pub fn to_u64(&self) -> u64 {
+        let mut buf = [0u8; 8];
+        let start = 8 - self.len;
+        buf[start..].copy_from_slice(&self.val);
+        u64::from_be_bytes(buf)
     }
 }
 

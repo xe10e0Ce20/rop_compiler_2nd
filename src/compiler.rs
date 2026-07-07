@@ -1,4 +1,3 @@
-// src/compiler.rs
 use std::collections::HashMap;
 use std::ops::Range;
 use miette::Result;
@@ -11,7 +10,7 @@ pub struct Compiler {
     pub block_outputs: HashMap<String, Vec<u8>>,
     pub current_block_name: Option<String>,
     pub macro_registry: HashMap<String, MacroDef>,
-    pub symbol_table: HashMap<String, u16>, 
+    pub symbol_table: HashMap<String, u16>,
     pub raw_symbol_table: HashMap<String, u16>,
     pub macro_call_counter: HashMap<String, usize>,
     pub current_filler: char,
@@ -34,7 +33,6 @@ impl Compiler {
         }
     }
 
-    /// 递归重命名表达式 (Expr) 中的局部标签
     fn rename_local_labels_in_expr(expr: &mut Expr, name: &str, call_id: usize) {
         for token in expr.tokens.iter_mut() {
             match token {
@@ -49,7 +47,6 @@ impl Compiler {
         }
     }
 
-    /// 递归重命名节点 (Node) 及其所有子作用域中的局部标签
     fn rename_local_labels_in_node(node: &mut Node, name: &str, call_id: usize) {
         match node {
             Node::Label(n) if n.starts_with('_') => {
@@ -102,7 +99,7 @@ impl Compiler {
                         }.into());
                     }
                     self.process_instruction(inst, span)?;
-                },
+                }
                 TopLevelItem::Block(block) => self.process_block(block, dry_run)?,
                 _ => {}
             }
@@ -114,7 +111,7 @@ impl Compiler {
         match inst {
             Instruction::Offset(new_offset) => { self.base_address = *new_offset; }
             Instruction::SetFiller(c) => { self.current_filler = *c; }
-        }  
+        }
         Ok(())
     }
 
@@ -143,57 +140,83 @@ impl Compiler {
         let is_raw = t_owned.starts_with('&');
         let target_key = if is_raw { t_owned[1..].to_string() } else { t_owned };
 
+        // 0x 开头的十六进制数值（任意长度）
         if target_key.starts_with("0x") {
             let hex_str = target_key.trim_start_matches("0x");
-            let v = u64::from_str_radix(hex_str, 16).map_err(|e| {
-                RopError::CompileError { 
-                    message: format!("无效的十六进制数值 / Invalid hex value: {}", e), 
-                    span: (span.start, span.len()).into() 
-                }
-            })?;
-            return Ok(RopValue::new(v, (hex_str.len() + 1) / 2));
+            let hex_str: String = hex_str.chars().filter(|c| !c.is_whitespace()).collect();
+            if hex_str.is_empty() {
+                return Err(RopError::CompileError {
+                    message: "空的十六进制数值 / Empty hex value".into(),
+                    span: (span.start, span.len()).into(),
+                }.into());
+            }
+            let mut bytes = Vec::new();
+            let mut chars = hex_str.chars().peekable();
+            while let Some(c1) = chars.next() {
+                let c2 = chars.next().unwrap_or('0');
+                let byte = u8::from_str_radix(&format!("{}{}", c1, c2), 16).map_err(|e| {
+                    RopError::CompileError {
+                        message: format!("无效的十六进制数值 / Invalid hex value: {}", e),
+                        span: (span.start, span.len()).into(),
+                    }
+                })?;
+                bytes.push(byte);
+            }
+            return Ok(RopValue::from_bytes(bytes));
         }
-        
-        if target_key.len() == 2 && target_key.chars().all(|c| c.is_ascii_hexdigit()) {
-            let v = u64::from_str_radix(&target_key, 16).map_err(|e| {
-                RopError::CompileError { 
-                    message: format!("无效的字节值 / Invalid byte value: {}", e), 
-                    span: (span.start, span.len()).into() 
-                }
-            })?;
-            return Ok(RopValue::new(v, 1));
-        } 
 
-        if let Some(&v) = arg_env.get(&target_key) {
-            Ok(v)
-        } else if let Some(&v) = self.symbol_table.get(&target_key) {
-            let final_val = if is_raw { (v - self.base_address) as u64 } else { v as u64 };
-            Ok(RopValue::new(final_val, 2))
-        } else if dry_run {
-            Ok(RopValue::new(0, 2))
-        } else {
-            Err(RopError::CompileError {
-                message: format!("未定义的标识符 '{}' / Undefined identifier '{}'", target_key, target_key),
-                span: (span.start, span.len()).into(),
-            }.into())
+        // 严格 2 位十六进制字节（如 "A8"）
+        if target_key.len() == 2 && target_key.chars().all(|c| c.is_ascii_hexdigit()) {
+            let v = u8::from_str_radix(&target_key, 16).map_err(|e| {
+                RopError::CompileError {
+                    message: format!("无效的字节值 / Invalid byte value: {}", e),
+                    span: (span.start, span.len()).into(),
+                }
+            })?;
+            return Ok(RopValue::from_u64(v as u64, 1));
         }
+
+        // 参数变量
+        if let Some(v) = arg_env.get(&target_key) {
+            return Ok(v.clone());
+        }
+
+        // 标签/符号引用（地址，固定 2 字节）
+        if let Some(&addr) = self.symbol_table.get(&target_key) {
+            let final_val = if is_raw {
+                (addr - self.base_address) as u64
+            } else {
+                addr as u64
+            };
+            return Ok(RopValue::from_u64(final_val, 2));
+        }
+
+        if dry_run {
+            return Ok(RopValue::placeholder(2));
+        }
+
+        Err(RopError::CompileError {
+            message: format!("未定义的标识符 '{}' / Undefined identifier '{}'", target_key, target_key),
+            span: (span.start, span.len()).into(),
+        }.into())
     }
 
     fn evaluate_expr(&self, expr: &Expr, span: &Range<usize>, arg_env: &HashMap<String, RopValue>, dry_run: bool) -> Result<RopValue> {
-        if expr.tokens.is_empty() { return Ok(RopValue::new(0, 0)); }
-        
+        if expr.tokens.is_empty() {
+            return Ok(RopValue::placeholder(0));
+        }
+
         let eval_token = |t: &ExprToken| -> Result<RopValue> {
             match t {
                 ExprToken::Raw(s) => self.parse_single_token(s, arg_env, dry_run, span),
                 ExprToken::Group(inner) => self.evaluate_expr(inner, span, arg_env, dry_run),
                 ExprToken::Bracket(inner) => {
-                    let mut val = self.evaluate_expr(inner, span, arg_env, dry_run)?;
-                    val.val = RopValue::reverse_rop_bytes(val.val, val.len);
-                    Ok(val)
+                    let val = self.evaluate_expr(inner, span, arg_env, dry_run)?;
+                    Ok(val.reverse_bytes())
                 }
-                ExprToken::Op(_) => Err(RopError::CompileError{ 
-                    message: "语法错误：此处不应出现操作符 / Syntax error: operator should not appear here".to_string(), 
-                    span: (span.start, span.len()).into() 
+                ExprToken::Op(_) => Err(RopError::CompileError {
+                    message: "语法错误：此处不应出现操作符 / Syntax error: operator should not appear here".to_string(),
+                    span: (span.start, span.len()).into(),
                 }.into()),
             }
         };
@@ -204,29 +227,34 @@ impl Compiler {
         while i + 1 < expr.tokens.len() {
             let op = match &expr.tokens[i] {
                 ExprToken::Op(o) => o,
-                _ => return Err(RopError::CompileError{ 
-                    message: "语法错误：此处应该是一个操作符 / Syntax error: expected an operator".to_string(), 
-                    span: (span.start, span.len()).into() 
+                _ => return Err(RopError::CompileError {
+                    message: "语法错误：此处应该是一个操作符 / Syntax error: expected an operator".to_string(),
+                    span: (span.start, span.len()).into(),
                 }.into()),
             };
             let next = eval_token(&expr.tokens[i + 1])?;
-            
+
             current = match op.as_str() {
-                "+" | "-" => current.math_op(&next, op),
+                "+" | "-" => current.math_op(&next, op).map_err(|e| RopError::CompileError {
+                    message: e,
+                    span: (span.start, span.len()).into(),
+                })?,
                 "|" => current.concat(&next),
-                _ => return Err(RopError::CompileError{ 
-                    message: format!("不支持的运算符 / Unsupported operator: {}", op), 
-                    span: (span.start, span.len()).into() 
+                _ => return Err(RopError::CompileError {
+                    message: format!("不支持的运算符 / Unsupported operator: {}", op),
+                    span: (span.start, span.len()).into(),
                 }.into()),
             };
             i += 2;
         }
+
         if i < expr.tokens.len() {
-            return Err(RopError::CompileError{ 
-                message: "表达式存在未配对的操作符 / Expression has unmatched operator".to_string(), 
-                span: (span.start, span.len()).into() 
+            return Err(RopError::CompileError {
+                message: "表达式存在未配对的操作符 / Expression has unmatched operator".to_string(),
+                span: (span.start, span.len()).into(),
             }.into());
         }
+
         Ok(current)
     }
 
@@ -242,13 +270,13 @@ impl Compiler {
                 if !dry_run {
                     if let Some(ref block_name) = self.current_block_name {
                         let start_off = self.block_outputs.get(block_name).map(|v| v.len()).unwrap_or(0);
-                        let bytes = rop_val.val.to_be_bytes()[(8 - rop_val.len)..].to_vec();
+                        let bytes = &rop_val.val; // 直接使用字节数组
                         let len = bytes.len();
                         self.span_map.entry(block_name.clone())
                             .or_default()
                             .push((spanned_expr.span.clone(), start_off..start_off + len));
                         if let Some(output) = self.block_outputs.get_mut(block_name) {
-                            output.extend_from_slice(&bytes);
+                            output.extend_from_slice(bytes);
                         }
                     }
                 }
@@ -275,12 +303,12 @@ impl Compiler {
                 let call_id = *count;
 
                 let mut macro_def = self.macro_registry.get(name).cloned().ok_or_else(|| {
-                    RopError::CompileError { 
-                        message: format!("未定义的宏 / Undefined macro: {}", name), 
-                        span: (node_span.start, node_span.len()).into() 
+                    RopError::CompileError {
+                        message: format!("未定义的宏 / Undefined macro: {}", name),
+                        span: (node_span.start, node_span.len()).into(),
                     }
                 })?;
-    
+
                 let num_params = macro_def.params.len();
                 if args.len() > num_params {
                     return Err(RopError::CompileError {
@@ -321,17 +349,14 @@ impl Compiler {
                     next_env.insert(param_def.name.clone(), val);
                 }
 
-                // 局部标签重命名
                 for wrapper in macro_def.body.iter_mut() {
                     Self::rename_local_labels_in_node(&mut wrapper.node, name, call_id);
                 }
 
-                // 展开宏体，内部节点会自动记录细粒度的 span_map
                 for n in &macro_def.body {
                     self.process_node(&n.node, &n.span, body, &next_env, dry_run)?;
                 }
 
-                // 整体映射：整个宏调用源码范围对应其生成的所有字节
                 if !dry_run {
                     if let Some(ref block_name) = self.current_block_name {
                         let end_off = self.block_outputs.get(block_name).map(|v| v.len()).unwrap_or(start_off);
