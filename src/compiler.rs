@@ -116,6 +116,13 @@ impl Compiler {
     }
 
     fn process_block(&mut self, block: &Block, dry_run: bool) -> Result<()> {
+        // 保存当前全局偏移和基址
+        let previous_offset = self.current_offset;
+        let previous_base = self.base_address;
+        // 每个 block 独立，偏移和基址从 0 开始（block 内部的 @offset 可修改基址）
+        self.current_offset = 0;
+        self.base_address = 0;
+
         if dry_run {
             self.symbol_table.insert(block.name.clone(), self.current_offset);
         } else {
@@ -128,6 +135,10 @@ impl Compiler {
             self.process_node(&spanned_node.node, &spanned_node.span, &None, &HashMap::new(), dry_run)?;
         }
         self.current_block_name = old_block;
+
+        // 恢复全局状态
+        self.current_offset = previous_offset;
+        self.base_address = previous_base;
         Ok(())
     }
 
