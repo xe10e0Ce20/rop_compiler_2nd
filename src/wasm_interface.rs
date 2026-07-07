@@ -17,16 +17,18 @@ pub struct WebCompileResult {
 fn calculate_position(source: &str, byte_offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
-    for (idx, c) in source.chars().enumerate() {
-        if idx >= byte_offset {
+    let mut current_byte = 0;
+    for ch in source.chars() {
+        if current_byte >= byte_offset {
             break;
         }
-        if c == '\n' {
+        if ch == '\n' {
             line += 1;
             col = 1;
         } else {
             col += 1;
         }
+        current_byte += ch.len_utf8();
     }
     (line, col)
 }
