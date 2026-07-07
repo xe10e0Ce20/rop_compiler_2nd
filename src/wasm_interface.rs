@@ -115,18 +115,29 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
     match compiler.compile(&ast_tree) {
         Ok(_) => {
             result.success = true;
+
             // 填充 blocks
             for (block_name, bytes) in compiler.block_outputs {
                 let hex_string: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                 result.blocks.insert(block_name, hex_string);
             }
-            // 填充 span_map
-            let span_map: HashMap<String, Vec<[usize; 4]>> = compiler.span_map.into_iter().map(|(block, vec)| {
-                let mapped = vec.into_iter().map(|(src_span, out_range)| {
-                    [src_span.start, src_span.end, out_range.start, out_range.end]
-                }).collect();
-                (block, mapped)
-            }).collect();
+
+            // 填充 span_map，并过滤掉导入库的映射（只保留主文件范围）
+            let main_len = source_code.len();
+            let span_map: HashMap<String, Vec<[usize; 4]>> = compiler
+                .span_map
+                .into_iter()
+                .map(|(block, vec)| {
+                    let filtered: Vec<[usize; 4]> = vec
+                        .into_iter()
+                        .filter(|(src_span, _)| src_span.start < main_len) // <-- 关键过滤
+                        .map(|(src_span, out_range)| {
+                            [src_span.start, src_span.end, out_range.start, out_range.end]
+                        })
+                        .collect();
+                    (block, filtered)
+                })
+                .collect();
             result.span_map = span_map;
         }
         Err(e) => {
@@ -137,7 +148,7 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
     serde_wasm_bindgen::to_value(&result).unwrap()
 }
 
-// ---------- 自动补全元数据（适应新 ParamDef） ----------
+// ---------- 自动补全元数据 ----------
 #[derive(serde::Serialize)]
 pub struct WebAutocompleteMetadata {
     pub macro_names: Vec<String>,
