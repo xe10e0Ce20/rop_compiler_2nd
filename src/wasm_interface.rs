@@ -102,7 +102,7 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
 
     // 注册导入库中的宏
     for item in &ast_tree.items {
-        if let crate::ast::TopLevelItem::Import(lib_name) = item {
+        if let crate::ast::TopLevelItem::Include(lib_name) = item {
             let this = JsValue::NULL;
             let arg = JsValue::from_str(lib_name);
             
@@ -125,7 +125,7 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
                         }
                     }
                 } else {
-                    result.error_message = Some(format!("找不到公共库资产 / Cannot find public library asset: '@import({})'", lib_name));
+                    result.error_message = Some(format!("找不到公共库资产 / Cannot find public library asset: '@include({})'", lib_name));
                     return serde_wasm_bindgen::to_value(&result).unwrap();
                 }
             }

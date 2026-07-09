@@ -3,9 +3,9 @@ WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 
 // 顶层结构
-file = { SOI ~ (import_cmd | macro_def | instruction | block)* ~ EOI }
+file = { SOI ~ (include_cmd | macro_def | instruction | block)* ~ EOI }
 
-import_cmd  = { "@import" ~ "(" ~ path_str ~ ")" }
+include_cmd  = { "@include" ~ "(" ~ path_str ~ ")" }
 path_str    = @{ (!")" ~ !WHITESPACE ~ ANY)+ } 
 
 

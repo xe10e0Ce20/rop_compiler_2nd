@@ -28,9 +28,9 @@ fn build_file(pair: Pair<Rule>) -> Result<RopFile> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::EOI => {}
-            Rule::import_cmd => {
+            Rule::include_cmd => {
                 let path = inner.into_inner().next().unwrap().as_str().to_string();
-                items.push(TopLevelItem::Import(path));
+                items.push(TopLevelItem::Include(path));
             }
             Rule::macro_def => items.push(TopLevelItem::MacroDef(build_macro_def(inner)?)),
             Rule::instruction => {
