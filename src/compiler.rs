@@ -11,8 +11,8 @@ pub struct Compiler {
     pub block_outputs: HashMap<String, Vec<u8>>,
     pub current_block_name: Option<String>,
     pub macro_registry: HashMap<String, MacroDef>,
-    pub symbol_table: HashMap<String, u16>,
-    pub raw_symbol_table: HashMap<String, u16>,
+    pub symbol_table: HashMap<String, u16>,          // 绝对地址
+    pub raw_symbol_table: HashMap<String, u16>,      // 相对偏移（定义时的块内偏移）
     pub macro_call_counter: HashMap<String, usize>,
     pub current_filler: char,
     pub span_map: HashMap<String, Vec<(Range<usize>, Range<usize>)>>,
@@ -129,7 +129,6 @@ impl Compiler {
     fn process_block(&mut self, block: &Block, dry_run: bool) -> Result<()> {
         let name = block.name.clone();
 
-        // 恢复该 block 的上次状态（同名拼接）
         if let Some(&base) = self.block_base.get(&name) {
             self.base_address = base;
         } else {
@@ -142,9 +141,10 @@ impl Compiler {
         }
 
         if dry_run {
-            // ✅ 插入 block 名称符号，使用绝对地址
             let abs_addr = self.base_address + self.current_offset;
             self.symbol_table.insert(name.clone(), abs_addr);
+            // block 名称本身也可以作为标签引用，其相对偏移为当前偏移（通常为0）
+            self.raw_symbol_table.insert(name.clone(), self.current_offset);
         } else {
             self.block_outputs.entry(name.clone()).or_insert(Vec::new());
         }
@@ -156,7 +156,6 @@ impl Compiler {
             self.process_node(&spanned_node.node, &spanned_node.span, &None, &HashMap::new(), dry_run)?;
         }
 
-        // 保存该 block 的最终状态，供后续同名 block 使用
         self.block_base.insert(name.clone(), self.base_address);
         self.block_offset.insert(name.clone(), self.current_offset);
 
@@ -214,15 +213,17 @@ impl Compiler {
             return Ok(v.clone());
         }
 
-        // 标签/符号引用（地址，固定 2 字节）
-        if let Some(&addr) = self.symbol_table.get(&target_key) {
-            let final_val = if is_raw {
-                // ✅ addr 为绝对地址，减去当前基址得到相对偏移
-                (addr - self.base_address) as u64
-            } else {
-                addr as u64
-            };
-            return Ok(RopValue::from_u64(final_val, 2));
+        // 标签/符号引用
+        if is_raw {
+            // & 前缀：返回定义时的相对偏移（固化值）
+            if let Some(&raw) = self.raw_symbol_table.get(&target_key) {
+                return Ok(RopValue::from_u64(raw as u64, 2));
+            }
+        } else {
+            // 无前缀：返回绝对地址
+            if let Some(&addr) = self.symbol_table.get(&target_key) {
+                return Ok(RopValue::from_u64(addr as u64, 2));
+            }
         }
 
         if dry_run {
@@ -296,9 +297,10 @@ impl Compiler {
         match node {
             Node::Label(name) => {
                 if dry_run {
-                    // ✅ 存储绝对地址 = 基址 + 当前偏移
                     let abs_addr = self.base_address + self.current_offset;
                     self.symbol_table.insert(name.clone(), abs_addr);
+                    // 存储相对偏移（固化值，不受后续基址变化影响）
+                    self.raw_symbol_table.insert(name.clone(), self.current_offset);
                 }
                 Ok(())
             }
