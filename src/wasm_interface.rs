@@ -1,7 +1,10 @@
 // src/wasm_interface.rs
+use crate::ast::TopLevelItem;
+use crate::ast::Node;
 use crate::compiler::Compiler;
 use crate::parser;
 use std::collections::HashMap;
+use std::collections::HashSet; 
 use wasm_bindgen::prelude::*;
 
 #[derive(serde::Serialize)]
@@ -13,6 +16,49 @@ pub struct WebCompileResult {
     pub blocks: HashMap<String, String>,
     pub span_map: HashMap<String, Vec<[usize; 4]>>,
 }
+
+
+fn set_spans_in_node(node: &mut Node, span: std::ops::Range<usize>) {
+    match node {
+        Node::Value(spanned_expr) => {
+            spanned_expr.span = span;
+        }
+        Node::MacroCall { args, body, .. } => {
+            for arg in args.iter_mut() {
+                arg.span = span.clone();
+            }
+            if let Some(b) = body {
+                for child in b.iter_mut() {
+                    child.span = span.clone();
+                    set_spans_in_node(&mut child.node, span.clone());
+                }
+            }
+        }
+        Node::Instruction(_) => {}   // Node::Instruction 本身不带 span
+        Node::Label(_) => {}
+        Node::Yield => {}
+    }
+}
+
+fn set_spans_in_item(item: &mut TopLevelItem, span: std::ops::Range<usize>) {
+    match item {
+        TopLevelItem::Block(block) => {
+            for spanned in block.contents.iter_mut() {
+                spanned.span = span.clone();
+                set_spans_in_node(&mut spanned.node, span.clone());
+            }
+        }
+        TopLevelItem::MacroDef(mdef) => {
+            for spanned in mdef.body.iter_mut() {
+                spanned.span = span.clone();
+                set_spans_in_node(&mut spanned.node, span.clone());
+            }
+        }
+        TopLevelItem::Instruction(_, s) => *s = span,
+        TopLevelItem::Include(_, s) => *s = span,
+    }
+}
+
 
 fn calculate_position(source: &str, byte_offset: usize) -> (usize, usize) {
     let mut line = 1;
@@ -79,6 +125,56 @@ fn byte_offset_to_utf16_offset(source: &str, byte_offset: usize) -> usize {
     utf16_count
 }
 
+/// 递归展开 AST 中的 @include 指令，原地替换为被包含文件的顶层项
+fn expand_includes(
+    items: &mut Vec<TopLevelItem>,
+    fetch_lib: &js_sys::Function,
+    stack: &mut HashSet<String>,
+) -> Result<(), String> {
+    let mut new_items = Vec::new();
+    for item in items.drain(..) {
+        match item {
+            TopLevelItem::Include(lib_name, include_span) => {
+                if stack.contains(&lib_name) {
+                    return Err(format!("循环包含: {}", lib_name));
+                }
+                stack.insert(lib_name.clone());
+
+                let this = JsValue::NULL;
+                let arg = JsValue::from_str(&lib_name);
+                let js_code_val = fetch_lib
+                    .call1(&this, &arg)
+                    .map_err(|_| format!("获取库失败: {}", lib_name))?;
+                let lib_code = js_code_val
+                    .as_string()
+                    .ok_or_else(|| format!("库非字符串: {}", lib_name))?;
+
+                if lib_code.is_empty() {
+                    stack.remove(&lib_name);
+                    continue;
+                }
+
+                let lib_ast = parser::parse_to_ast(&lib_code)
+                    .map_err(|e| format!("库 [{}] 语法错误: {}", lib_name, e))?;
+
+                let mut lib_items = lib_ast.items;
+                // 递归展开库自身的 include
+                expand_includes(&mut lib_items, fetch_lib, stack)?;
+
+                for item in lib_items.iter_mut() {
+                    set_spans_in_item(item, include_span.clone());
+                }
+
+                new_items.extend(lib_items);
+                stack.remove(&lib_name);
+            }
+            other => new_items.push(other),
+        }
+    }
+    *items = new_items;
+    Ok(())
+}
+
 #[wasm_bindgen]
 pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsValue {
     let mut result = WebCompileResult {
@@ -90,7 +186,8 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
         span_map: HashMap::new(),
     };
 
-    let ast_tree = match parser::parse_to_ast(source_code) {
+    // 1. 解析主文件
+    let mut ast_tree = match parser::parse_to_ast(source_code) {
         Ok(ast) => ast,
         Err(e) => {
             handle_rope_error(e, source_code, &mut result);
@@ -98,51 +195,24 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
         }
     };
 
-    let mut compiler = Compiler::new();
-
-    // 注册导入库中的宏
-    for item in &ast_tree.items {
-        if let crate::ast::TopLevelItem::Include(lib_name) = item {
-            let this = JsValue::NULL;
-            let arg = JsValue::from_str(lib_name);
-            
-            if let Ok(js_code_val) = fetch_lib_fn.call1(&this, &arg) {
-                if let Some(lib_code) = js_code_val.as_string() {
-                    if !lib_code.is_empty() {
-                        match parser::parse_to_ast(&lib_code) {
-                            Ok(lib_ast) => {
-                                for lib_item in lib_ast.items {
-                                    if let crate::ast::TopLevelItem::MacroDef(m) = lib_item {
-                                        compiler.register_macro(m);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                handle_rope_error(e, &lib_code, &mut result);
-                                result.error_message = Some(format!("公共库 [{}] 语法错误 / Public library [{}] syntax error: {}", lib_name, lib_name, result.error_message.unwrap_or_default()));
-                                return serde_wasm_bindgen::to_value(&result).unwrap();
-                            }
-                        }
-                    }
-                } else {
-                    result.error_message = Some(format!("找不到公共库资产 / Cannot find public library asset: '@include({})'", lib_name));
-                    return serde_wasm_bindgen::to_value(&result).unwrap();
-                }
-            }
-        }
+    // 2. 原地展开所有 @include
+    let mut include_stack = HashSet::new();
+    if let Err(err_msg) = expand_includes(&mut ast_tree.items, &fetch_lib_fn, &mut include_stack) {
+        result.error_message = Some(err_msg);
+        return serde_wasm_bindgen::to_value(&result).unwrap();
     }
 
+    // 3. 编译（compiler 内部会注册所有宏定义，无需提前处理）
+    let mut compiler = Compiler::new();
     match compiler.compile(&ast_tree) {
         Ok(_) => {
             result.success = true;
-
             // 填充 blocks
             for (block_name, bytes) in compiler.block_outputs {
                 let hex_string: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                 result.blocks.insert(block_name, hex_string);
             }
-
-            // 填充 span_map，将字节偏移转换为 UTF-16 字符偏移
+            // 填充 span_map
             let main_len = source_code.len();
             let span_map: HashMap<String, Vec<[usize; 4]>> = compiler
                 .span_map
@@ -166,11 +236,10 @@ pub fn compile_for_web(source_code: &str, fetch_lib_fn: js_sys::Function) -> JsV
             handle_rope_error(e, source_code, &mut result);
         }
     }
-
     serde_wasm_bindgen::to_value(&result).unwrap()
 }
 
-// ---------- 自动补全元数据 ----------
+// ---------- 自动补全元数据 (保持不变) ----------
 #[derive(serde::Serialize)]
 pub struct WebAutocompleteMetadata {
     pub macro_names: Vec<String>,
@@ -186,6 +255,8 @@ pub struct MacroParamInfo {
 
 #[wasm_bindgen]
 pub fn get_autocomplete_metadata(source_code: &str) -> JsValue {
+    // 注意：这里没有展开 include，所以补全只基于当前文件的宏定义。
+    // 如需包含库中的宏，可类似 compile_for_web 那样先展开再扫描。
     let mut meta = WebAutocompleteMetadata {
         macro_names: Vec::new(),
         macro_details: HashMap::new(),

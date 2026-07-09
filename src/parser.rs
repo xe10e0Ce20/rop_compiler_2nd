@@ -29,8 +29,9 @@ fn build_file(pair: Pair<Rule>) -> Result<RopFile> {
         match inner.as_rule() {
             Rule::EOI => {}
             Rule::include_cmd => {
+                let span = inner.as_span().start()..inner.as_span().end();
                 let path = inner.into_inner().next().unwrap().as_str().to_string();
-                items.push(TopLevelItem::Include(path));
+                items.push(TopLevelItem::Include(path, span));
             }
             Rule::macro_def => items.push(TopLevelItem::MacroDef(build_macro_def(inner)?)),
             Rule::instruction => {

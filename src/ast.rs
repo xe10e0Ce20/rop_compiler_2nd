@@ -27,7 +27,7 @@ pub struct RopFile {
 
 #[derive(Debug, Clone)]
 pub enum TopLevelItem {
-    Include(String),
+    Include(String, Range<usize>),   // 第二个字段是 include 指令的源码位置
     MacroDef(MacroDef),
     Instruction(Instruction, Range<usize>),
     Block(Block),
