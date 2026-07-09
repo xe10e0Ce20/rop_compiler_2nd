@@ -16,7 +16,6 @@ pub struct Compiler {
     pub macro_call_counter: HashMap<String, usize>,
     pub current_filler: char,
     pub span_map: HashMap<String, Vec<(Range<usize>, Range<usize>)>>,
-    // 每个 block 的基址和累积偏移（用于同名 block 拼接）
     block_base: HashMap<String, u16>,
     block_offset: HashMap<String, u16>,
 }
@@ -85,12 +84,10 @@ impl Compiler {
                 self.register_macro(m.clone());
             }
         }
-        // 干运行前清空 block 状态
         self.block_base.clear();
         self.block_offset.clear();
         self.run_pass(ast, true)?;
 
-        // 干运行后重置所有状态，准备真实编译
         self.block_base.clear();
         self.block_offset.clear();
         self.current_offset = 0;
@@ -99,7 +96,7 @@ impl Compiler {
         self.macro_call_counter.clear();
         self.current_block_name = None;
         self.run_pass(ast, false)?;
-        Ok(self.base_address) // 注意：返回 base_address 可能无意义，保留原样
+        Ok(self.base_address)
     }
 
     fn run_pass(&mut self, ast: &RopFile, dry_run: bool) -> Result<()> {
@@ -129,7 +126,6 @@ impl Compiler {
         Ok(())
     }
 
-    
     fn process_block(&mut self, block: &Block, dry_run: bool) -> Result<()> {
         let name = block.name.clone();
 
@@ -145,7 +141,11 @@ impl Compiler {
             self.current_offset = 0;
         }
 
-        if !dry_run {
+        if dry_run {
+            // ✅ 插入 block 名称符号，使用绝对地址
+            let abs_addr = self.base_address + self.current_offset;
+            self.symbol_table.insert(name.clone(), abs_addr);
+        } else {
             self.block_outputs.entry(name.clone()).or_insert(Vec::new());
         }
 
@@ -217,6 +217,7 @@ impl Compiler {
         // 标签/符号引用（地址，固定 2 字节）
         if let Some(&addr) = self.symbol_table.get(&target_key) {
             let final_val = if is_raw {
+                // ✅ addr 为绝对地址，减去当前基址得到相对偏移
                 (addr - self.base_address) as u64
             } else {
                 addr as u64
@@ -294,7 +295,11 @@ impl Compiler {
     fn process_node(&mut self, node: &Node, node_span: &Range<usize>, trailing_body: &Option<Vec<Spanned<Node>>>, arg_env: &HashMap<String, RopValue>, dry_run: bool) -> Result<()> {
         match node {
             Node::Label(name) => {
-                if dry_run { self.symbol_table.insert(name.clone(), self.current_offset); }
+                if dry_run {
+                    // ✅ 存储绝对地址 = 基址 + 当前偏移
+                    let abs_addr = self.base_address + self.current_offset;
+                    self.symbol_table.insert(name.clone(), abs_addr);
+                }
                 Ok(())
             }
             Node::Instruction(inst) => self.process_instruction(inst, node_span),
@@ -303,7 +308,7 @@ impl Compiler {
                 if !dry_run {
                     if let Some(ref block_name) = self.current_block_name {
                         let start_off = self.block_outputs.get(block_name).map(|v| v.len()).unwrap_or(0);
-                        let bytes = &rop_val.val; // 直接使用字节数组
+                        let bytes = &rop_val.val;
                         let len = bytes.len();
                         self.span_map.entry(block_name.clone())
                             .or_default()
